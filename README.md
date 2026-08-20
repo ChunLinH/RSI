@@ -17,6 +17,8 @@ py -3 -m rsi_monitor
 
 Windows 电脑也可以双击项目目录中的 `run_windows.bat`，脚本会检查 Python 版本、安装依赖并启动程序。电脑需要预先安装 Python 3.12 或更高版本，并能访问网络；也可以直接运行 `run_windows.ps1`。
 
+如果不想安装 Python，可以在 [GitHub Releases](https://github.com/ChunLinH/RSI/releases/tag/v0.1.0) 下载 Windows 独立版，解压后双击 `RSIWatch\RSIWatch.exe` 即可运行。
+
 ## Windows 桌面程序
 
 在 PowerShell 运行：
