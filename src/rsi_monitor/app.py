@@ -42,6 +42,23 @@ def send_test_notification(config: AppConfig, symbol: str, interval: str) -> Not
     return create_notifier(config).send(create_test_notification(symbol, interval))
 
 
+def ensure_config_file(project_root: Path) -> Path:
+    """首次运行时从不含密钥的模板创建本地配置。"""
+    config_directory = project_root / "config"
+    config_path = config_directory / "settings.ini"
+    if config_path.exists():
+        return config_path
+
+    template_path = config_directory / "settings.example.ini"
+    if not template_path.exists():
+        raise RuntimeError(f"缺少配置模板：{template_path}")
+
+    config_directory.mkdir(parents=True, exist_ok=True)
+    copy2(template_path, config_path)
+    logging.getLogger(__name__).info("已创建默认配置：%s", config_path)
+    return config_path
+
+
 def create_engine(
     config: AppConfig,
     symbol: str,
@@ -120,7 +137,7 @@ def _user_data_root(project_root: Path) -> Path:
 
 def main() -> None:
     project_root = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2]
-    config = load_config(project_root / "config" / "settings.ini")
+    config = load_config(ensure_config_file(project_root))
     configure_logging(config, project_root)
     monitor_session_store = create_monitor_session_store(config, project_root)
     market_cache_directory = create_market_cache_directory(config, project_root)

@@ -12,7 +12,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 New-Item -ItemType Directory -Force -Path dist\RSIWatch\config | Out-Null
-Copy-Item -Force config\settings.ini dist\RSIWatch\config\settings.ini
+Copy-Item -Force config\settings.example.ini dist\RSIWatch\config\settings.example.ini
+Remove-Item -Force dist\RSIWatch\config\settings.ini -ErrorAction SilentlyContinue
 if (Test-Path config\monitor_sessions.json) {
     Copy-Item -Force config\monitor_sessions.json dist\RSIWatch\config\monitor_sessions.json
 }

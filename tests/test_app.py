@@ -1,7 +1,30 @@
 from types import SimpleNamespace
 
-from rsi_monitor.app import create_monitor_session_store
+from rsi_monitor.app import create_monitor_session_store, ensure_config_file
 from rsi_monitor.monitoring.session_store import MonitorDefinition, MonitorSessionStore
+
+
+def test_ensure_config_file_copies_safe_template(tmp_path) -> None:
+    config_directory = tmp_path / "project" / "config"
+    config_directory.mkdir(parents=True)
+    template = config_directory / "settings.example.ini"
+    template.write_text("[notifications]\nprovider = console\n", encoding="utf-8")
+
+    config_path = ensure_config_file(tmp_path / "project")
+
+    assert config_path == config_directory / "settings.ini"
+    assert config_path.read_text(encoding="utf-8") == template.read_text(encoding="utf-8")
+
+
+def test_ensure_config_file_preserves_existing_settings(tmp_path) -> None:
+    config_directory = tmp_path / "project" / "config"
+    config_directory.mkdir(parents=True)
+    config_path = config_directory / "settings.ini"
+    config_path.write_text("custom", encoding="utf-8")
+    (config_directory / "settings.example.ini").write_text("template", encoding="utf-8")
+
+    assert ensure_config_file(tmp_path / "project") == config_path
+    assert config_path.read_text(encoding="utf-8") == "custom"
 
 
 def test_monitor_session_store_uses_windows_user_data_directory(tmp_path, monkeypatch) -> None:

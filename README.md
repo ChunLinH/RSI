@@ -12,6 +12,11 @@ py -3 -m pip install -e .
 py -3 -m rsi_monitor
 ```
 
+首次启动时，如果不存在 `config/settings.ini`，程序会自动从不含密钥的
+`config/settings.example.ini` 创建默认配置。默认使用上证指数（`000001`），通知默认关闭；需要微信通知时，再编辑生成的 `config/settings.ini`。
+
+Windows 电脑也可以双击项目目录中的 `run_windows.bat`，脚本会检查 Python 版本、安装依赖并启动程序。电脑需要预先安装 Python 3.12 或更高版本，并能访问网络；也可以直接运行 `run_windows.ps1`。
+
 ## Windows 桌面程序
 
 在 PowerShell 运行：
@@ -20,7 +25,7 @@ py -3 -m rsi_monitor
 .\build_windows_app.ps1
 ```
 
-之后双击 `dist\RSIWatch\RSIWatch.exe` 即可启动，不会打开终端窗口。打包后的可修改配置在 `dist\RSIWatch\config\settings.ini`。
+之后双击 `dist\RSIWatch\RSIWatch.exe` 即可启动，不会打开终端窗口。打包后的可修改配置在 `dist\RSIWatch\config\settings.ini`；如果没有该文件，程序会自动从同目录的 `settings.example.ini` 创建。
 
 程序默认读取 `config/settings.ini`。国内行情无需 API Key；界面可输入六位 A 股或 ETF 代码并选择 1、5、15 分钟周期。添加标的后会加载最近的分钟 K 线，因此可立即显示 RSI；随后每秒以实时价格更新当前 K 线和 RSI。刷新间隔可在 `app.refresh_interval_seconds` 配置。监控清单保存在 Windows 本地数据目录 `%LOCALAPPDATA%\\RSIWatch\\monitor_sessions.json`，重启或更新 EXE 后都会自动恢复；为避免重启时意外发送提醒，恢复后需手动点击“开始全部监控”。点击窗口右上角 × 会将程序隐藏到 Windows 系统托盘，监控继续运行；双击托盘图标可恢复窗口，右键菜单中的“退出程序”才会真正结束监控。
 
