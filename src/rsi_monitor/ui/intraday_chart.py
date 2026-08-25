@@ -688,13 +688,19 @@ class IntradayChartPanel(QWidget):
         self._draw_grid(
             painter,
             chart,
-            horizontal=4 if series.period == "intraday" else 5,
+            horizontal=(
+                4
+                if series.period == "intraday"
+                else 2 if series.period == "five_day" else 5
+            ),
             vertical=6,
         )
         self._draw_price_labels(painter, chart, minimum, maximum, series)
-        if series.previous_close is not None:
-            y = self._value_y(series.previous_close, chart, minimum, maximum)
-            painter.setPen(QPen(QColor("#8b8f96"), 1, Qt.PenStyle.DashLine))
+        reference_line_price = self._reference_line_price(series, bars)
+        if reference_line_price is not None:
+            y = self._value_y(reference_line_price, chart, minimum, maximum)
+            line_color = "#ef9a9a" if series.period == "five_day" else "#8b8f96"
+            painter.setPen(QPen(QColor(line_color), 1, Qt.PenStyle.DashLine))
             painter.drawLine(QPointF(chart.left(), y), QPointF(chart.right(), y))
         if series.period in {"intraday", "five_day"}:
             self._draw_trend_lines(
@@ -722,6 +728,14 @@ class IntradayChartPanel(QWidget):
                     maximum,
                 )
         self._draw_time_labels(painter, chart, bars, series.period, x_positions)
+
+    @staticmethod
+    def _reference_line_price(
+        series: ChartSeries, bars: tuple[MarketBar, ...]
+    ) -> float | None:
+        if series.period == "five_day" and bars:
+            return bars[-1].close
+        return series.previous_close
 
     def _draw_trend_lines(
         self,
@@ -1082,6 +1096,29 @@ class IntradayChartPanel(QWidget):
         maximum: float,
         series: ChartSeries,
     ) -> None:
+        if series.period == "five_day" and series.previous_close is not None:
+            previous_close = series.previous_close
+            for index in range(3):
+                price = maximum - (maximum - minimum) * index / 2
+                percent = (price / previous_close - 1) * 100
+                y = chart.top() + chart.height() * index / 2
+                color = (
+                    QColor("#e53935")
+                    if percent > 0
+                    else QColor("#269a49") if percent < 0 else QColor("#555555")
+                )
+                painter.setPen(color)
+                painter.drawText(
+                    QRectF(chart.left() + 4, y - 9, 70, 18),
+                    Qt.AlignmentFlag.AlignLeft,
+                    f"{price:.3f}",
+                )
+                painter.drawText(
+                    QRectF(chart.right() - 54, y - 9, 50, 18),
+                    Qt.AlignmentFlag.AlignRight,
+                    "0.00%" if abs(percent) < 0.0001 else f"{percent:+.2f}%",
+                )
+            return
         if series.period == "intraday" and series.previous_close is not None:
             previous_close = series.previous_close
             percent_range = (maximum / previous_close - 1) * 100
@@ -1157,6 +1194,21 @@ class IntradayChartPanel(QWidget):
                 "15:00",
             )
             return
+        if period == "five_day":
+            date_indices: list[int] = []
+            previous_date = None
+            for index, bar in enumerate(bars):
+                current_date = bar.timestamp.date()
+                if current_date != previous_date:
+                    date_indices.append(index)
+                    previous_date = current_date
+            for index in date_indices:
+                painter.drawText(
+                    QRectF(x_positions[index], chart.bottom() - 18, 80, 18),
+                    Qt.AlignmentFlag.AlignLeft,
+                    bars[index].timestamp.strftime("%m-%d"),
+                )
+            return
         indices = tuple(dict.fromkeys((0, len(bars) // 2, len(bars) - 1)))
         alignments = {
             1: (Qt.AlignmentFlag.AlignCenter,),
@@ -1200,6 +1252,11 @@ class IntradayChartPanel(QWidget):
             return (
                 previous_close * (1 - percent_range / 100),
                 previous_close * (1 + percent_range / 100),
+            )
+        if series.period == "five_day":
+            return (
+                min(bar.low for bar in bars),
+                max(bar.high for bar in bars),
             )
         minimum = min(bar.low for bar in bars)
         maximum = max(bar.high for bar in bars)

@@ -347,14 +347,23 @@ class TencentChinaMarketDataProvider(ChartMarketDataProvider):
         days = node.get("data")
         if not isinstance(days, list):
             raise MarketDataError(f"{self._symbol} 未返回五日分时数据")
-        bars: list[MarketBar] = []
+        parsed_days: list[tuple[tuple[MarketBar, ...], float | None]] = []
         for day in days:
             if not isinstance(day, dict) or not isinstance(day.get("data"), list):
                 continue
-            bars.extend(self._parse_trend_entries(str(day.get("date", "")), day["data"]))
-        if not bars:
+            day_bars = self._parse_trend_entries(
+                str(day.get("date", "")), day["data"]
+            )
+            if day_bars:
+                parsed_days.append(
+                    (day_bars, self._optional_float(day.get("prec")))
+                )
+        if not parsed_days:
             raise MarketDataError(f"{self._symbol} 五日分时数据为空")
-        return self._create_series(node, "five_day", tuple(sorted(bars, key=lambda bar: bar.timestamp)))
+        parsed_days.sort(key=lambda item: item[0][0].timestamp)
+        bars = tuple(bar for day_bars, _ in parsed_days for bar in day_bars)
+        series = self._create_series(node, "five_day", bars)
+        return replace(series, previous_close=parsed_days[0][1])
 
     def _request_json(self, url: str) -> dict:
         request = Request(

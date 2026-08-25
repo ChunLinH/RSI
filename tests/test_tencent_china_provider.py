@@ -268,3 +268,27 @@ def test_parses_intraday_volume_and_filters_after_market_entries(monkeypatch) ->
     assert [bar.close for bar in series.bars] == [2.1, 2.11]
     assert [bar.volume for bar in series.bars] == [100, 30]
     assert [bar.amount for bar in series.bars] == [21000, 6330]
+
+
+def test_five_day_series_uses_close_before_earliest_day(monkeypatch) -> None:
+    def fake_urlopen(request, timeout):
+        return FakeResponse(
+            '{"code":0,"msg":"","data":{"sz159952":{'
+            '"qt":{"sz159952":["51","创业板ETF"]},"data":['
+            '{"date":"20260825","prec":"2.20","data":['
+            '"0930 2.210 100 22100.00"]},'
+            '{"date":"20260821","prec":"2.00","data":['
+            '"0930 2.100 80 16800.00"]}'
+            ']}}}'
+        )
+
+    monkeypatch.setattr("rsi_monitor.market_data.tencent_china.urlopen", fake_urlopen)
+    provider = TencentChinaMarketDataProvider("159952", 3, 1, 0)
+
+    series = provider.fetch_chart_series("five_day", 2_000)
+
+    assert series.previous_close == 2.00
+    assert [bar.timestamp.strftime("%Y-%m-%d") for bar in series.bars] == [
+        "2026-08-21",
+        "2026-08-25",
+    ]

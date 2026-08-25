@@ -607,6 +607,94 @@ def test_intraday_price_range_uses_recorded_bar_high_after_price_reverses() -> N
     assert maximum == pytest.approx(104.2)
 
 
+def test_five_day_chart_uses_exact_extrema_and_latest_price_line() -> None:
+    bars = (
+        MarketBar(datetime(2026, 8, 19, 9, 30), 3618.78, 3618.78, 3618.78, 3618.78, 100),
+        MarketBar(datetime(2026, 8, 25, 14, 53), 3398.62, 3398.62, 3360.37, 3398.62, 100),
+    )
+    series = ChartSeries(
+        "399006", "创业板指", "five_day", bars, previous_close=3705.56
+    )
+
+    minimum, maximum = IntradayChartPanel._price_range(bars, series)
+
+    assert minimum == pytest.approx(3360.37)
+    assert maximum == pytest.approx(3618.78)
+    assert IntradayChartPanel._reference_line_price(series, bars) == 3398.62
+
+
+def test_five_day_price_labels_use_common_baseline() -> None:
+    class RecordingPainter:
+        def __init__(self) -> None:
+            self.texts: list[str] = []
+            self.rectangles: list[QRectF] = []
+
+        def setPen(self, pen) -> None:
+            pass
+
+        def drawText(self, *arguments) -> None:
+            self.rectangles.append(arguments[0])
+            self.texts.append(arguments[-1])
+
+    bars = (
+        MarketBar(datetime(2026, 8, 19, 9, 30), 3618.78, 3618.78, 3618.78, 3618.78, 100),
+    )
+    series = ChartSeries(
+        "399006", "创业板指", "five_day", bars, previous_close=3705.56
+    )
+    painter = RecordingPainter()
+
+    IntradayChartPanel._draw_price_labels(
+        painter, QRectF(60, 20, 600, 300), 3360.37, 3618.78, series
+    )
+
+    assert painter.texts == [
+        "3618.780",
+        "-2.34%",
+        "3489.575",
+        "-5.83%",
+        "3360.370",
+        "-9.32%",
+    ]
+    assert all(
+        rectangle.right() <= 660
+        for rectangle in painter.rectangles[1::2]
+    )
+    assert all(
+        rectangle.left() >= 60
+        for rectangle in painter.rectangles[0::2]
+    )
+
+
+def test_five_day_time_axis_labels_each_trading_day() -> None:
+    class RecordingPainter:
+        def __init__(self) -> None:
+            self.texts: list[str] = []
+
+        def setPen(self, pen) -> None:
+            pass
+
+        def drawText(self, *arguments) -> None:
+            self.texts.append(arguments[-1])
+
+    dates = (19, 20, 21, 24, 25)
+    bars = tuple(
+        MarketBar(datetime(2026, 8, day, 9, 30), 1, 1, 1, 1, 100)
+        for day in dates
+    )
+    painter = RecordingPainter()
+
+    IntradayChartPanel._draw_time_labels(
+        painter,
+        QRectF(60, 20, 600, 300),
+        bars,
+        "five_day",
+        (60.0, 180.0, 300.0, 420.0, 540.0),
+    )
+
+    assert painter.texts == ["08-19", "08-20", "08-21", "08-24", "08-25"]
+
+
 def test_quote_panel_can_collapse_to_compact_width_and_expand(qtbot) -> None:
     panel = IntradayChartPanel()
     qtbot.addWidget(panel)
