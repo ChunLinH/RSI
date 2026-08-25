@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from datetime import datetime, time as clock_time
-from math import ceil
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, QTimer, Qt, Signal
 from PySide6.QtGui import (
@@ -1197,7 +1196,7 @@ class IntradayChartPanel(QWidget):
                 * 100
                 for bar in bars
             )
-            percent_range = max(2.0, ceil(maximum_deviation * 1.1 / 0.5) * 0.5)
+            percent_range = maximum_deviation
             return (
                 previous_close * (1 - percent_range / 100),
                 previous_close * (1 + percent_range / 100),

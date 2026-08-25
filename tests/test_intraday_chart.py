@@ -577,10 +577,10 @@ def test_zoomed_kline_can_be_dragged_horizontally(qtbot) -> None:
     assert selected_periods == []
 
 
-def test_intraday_price_range_is_symmetric_around_previous_close() -> None:
+def test_intraday_price_range_uses_exact_largest_downside_deviation() -> None:
     previous_close = 100.0
     bars = (
-        MarketBar(datetime(2026, 8, 13, 9, 40), 101.73, 101.73, 101.2, 101.73, 100),
+        MarketBar(datetime(2026, 8, 13, 9, 40), 100.0, 101.8, 96.5, 99.0, 100),
     )
     series = ChartSeries(
         "TEST", "测试", "intraday", bars, previous_close=previous_close
@@ -588,8 +588,23 @@ def test_intraday_price_range_is_symmetric_around_previous_close() -> None:
 
     minimum, maximum = IntradayChartPanel._price_range(bars, series)
 
-    assert minimum == 98.0
-    assert maximum == 102.0
+    assert minimum == pytest.approx(96.5)
+    assert maximum == pytest.approx(103.5)
+
+
+def test_intraday_price_range_uses_recorded_bar_high_after_price_reverses() -> None:
+    previous_close = 100.0
+    bars = (
+        MarketBar(datetime(2026, 8, 13, 9, 40), 100.0, 104.2, 99.0, 101.0, 100),
+    )
+    series = ChartSeries(
+        "TEST", "测试", "intraday", bars, previous_close=previous_close
+    )
+
+    minimum, maximum = IntradayChartPanel._price_range(bars, series)
+
+    assert minimum == pytest.approx(95.8)
+    assert maximum == pytest.approx(104.2)
 
 
 def test_quote_panel_can_collapse_to_compact_width_and_expand(qtbot) -> None:
