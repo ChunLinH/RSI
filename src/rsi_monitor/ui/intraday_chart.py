@@ -688,19 +688,14 @@ class IntradayChartPanel(QWidget):
         self._draw_grid(
             painter,
             chart,
-            horizontal=(
-                4
-                if series.period == "intraday"
-                else 2 if series.period == "five_day" else 5
-            ),
+            horizontal=4 if series.period in {"intraday", "five_day"} else 5,
             vertical=6,
         )
         self._draw_price_labels(painter, chart, minimum, maximum, series)
-        reference_line_price = self._reference_line_price(series, bars)
+        reference_line_price = series.previous_close
         if reference_line_price is not None:
             y = self._value_y(reference_line_price, chart, minimum, maximum)
-            line_color = "#ef9a9a" if series.period == "five_day" else "#8b8f96"
-            painter.setPen(QPen(QColor(line_color), 1, Qt.PenStyle.DashLine))
+            painter.setPen(QPen(QColor("#8b8f96"), 1, Qt.PenStyle.DashLine))
             painter.drawLine(QPointF(chart.left(), y), QPointF(chart.right(), y))
         if series.period in {"intraday", "five_day"}:
             self._draw_trend_lines(
@@ -728,14 +723,6 @@ class IntradayChartPanel(QWidget):
                     maximum,
                 )
         self._draw_time_labels(painter, chart, bars, series.period, x_positions)
-
-    @staticmethod
-    def _reference_line_price(
-        series: ChartSeries, bars: tuple[MarketBar, ...]
-    ) -> float | None:
-        if series.period == "five_day" and bars:
-            return bars[-1].close
-        return series.previous_close
 
     def _draw_trend_lines(
         self,
@@ -1098,10 +1085,11 @@ class IntradayChartPanel(QWidget):
     ) -> None:
         if series.period == "five_day" and series.previous_close is not None:
             previous_close = series.previous_close
-            for index in range(3):
-                price = maximum - (maximum - minimum) * index / 2
-                percent = (price / previous_close - 1) * 100
-                y = chart.top() + chart.height() * index / 2
+            percent_range = (maximum / previous_close - 1) * 100
+            for index in range(5):
+                percent = percent_range * (1 - index / 2)
+                price = previous_close * (1 + percent / 100)
+                y = chart.top() + chart.height() * index / 4
                 color = (
                     QColor("#e53935")
                     if percent > 0
@@ -1234,7 +1222,7 @@ class IntradayChartPanel(QWidget):
         visible_start: int = 0,
     ) -> tuple[float, float]:
         if (
-            series.period == "intraday"
+            series.period in {"intraday", "five_day"}
             and series.previous_close is not None
             and series.previous_close > 0
         ):
@@ -1252,11 +1240,6 @@ class IntradayChartPanel(QWidget):
             return (
                 previous_close * (1 - percent_range / 100),
                 previous_close * (1 + percent_range / 100),
-            )
-        if series.period == "five_day":
-            return (
-                min(bar.low for bar in bars),
-                max(bar.high for bar in bars),
             )
         minimum = min(bar.low for bar in bars)
         maximum = max(bar.high for bar in bars)

@@ -607,7 +607,7 @@ def test_intraday_price_range_uses_recorded_bar_high_after_price_reverses() -> N
     assert maximum == pytest.approx(104.2)
 
 
-def test_five_day_chart_uses_exact_extrema_and_latest_price_line() -> None:
+def test_five_day_chart_uses_symmetric_zero_axis_and_baseline_line() -> None:
     bars = (
         MarketBar(datetime(2026, 8, 19, 9, 30), 3618.78, 3618.78, 3618.78, 3618.78, 100),
         MarketBar(datetime(2026, 8, 25, 14, 53), 3398.62, 3398.62, 3360.37, 3398.62, 100),
@@ -619,8 +619,8 @@ def test_five_day_chart_uses_exact_extrema_and_latest_price_line() -> None:
     minimum, maximum = IntradayChartPanel._price_range(bars, series)
 
     assert minimum == pytest.approx(3360.37)
-    assert maximum == pytest.approx(3618.78)
-    assert IntradayChartPanel._reference_line_price(series, bars) == 3398.62
+    assert maximum == pytest.approx(4050.75)
+    assert (minimum + maximum) / 2 == pytest.approx(series.previous_close)
 
 
 def test_five_day_price_labels_use_common_baseline() -> None:
@@ -645,14 +645,18 @@ def test_five_day_price_labels_use_common_baseline() -> None:
     painter = RecordingPainter()
 
     IntradayChartPanel._draw_price_labels(
-        painter, QRectF(60, 20, 600, 300), 3360.37, 3618.78, series
+        painter, QRectF(60, 20, 600, 300), 3360.37, 4050.75, series
     )
 
     assert painter.texts == [
-        "3618.780",
-        "-2.34%",
-        "3489.575",
-        "-5.83%",
+        "4050.750",
+        "+9.32%",
+        "3878.155",
+        "+4.66%",
+        "3705.560",
+        "0.00%",
+        "3532.965",
+        "-4.66%",
         "3360.370",
         "-9.32%",
     ]
