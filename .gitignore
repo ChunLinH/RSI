@@ -1,0 +1,22 @@
+# Local runtime and user-specific data
+config/settings.ini
+config/monitor_sessions.json
+logs/
+
+# Build and Python-generated files
+dist/
+dist-*/
+build/
+build-*/
+dist-staging/
+build-staging/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Generated package metadata
+src/stock_rsi_monitor.egg-info/
+
+# Release archives
+*.zip

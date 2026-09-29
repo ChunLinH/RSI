@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 import logging
+import re
 from collections.abc import Callable
 from time import monotonic
 
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMenu,
+    QInputDialog,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -38,6 +40,7 @@ from rsi_monitor.market_data.base import (
 from rsi_monitor.market_data.breadth import MarketBreadth
 from rsi_monitor.market_data.chart_periods import CHART_PERIODS
 from rsi_monitor.market_data.live_series import apply_live_quote
+from rsi_monitor.market_data.security_search import SecuritySearchResult
 from rsi_monitor.monitoring.engine import MonitorEngine, MonitorSnapshot
 from rsi_monitor.monitoring.session_store import MonitorDefinition
 from rsi_monitor.notifications.base import NotificationResult
@@ -175,6 +178,7 @@ class MainWindow(QMainWindow):
         chart_refresh_interval_seconds: float = 15,
         market_breadth_fetcher: Callable[[], MarketBreadth] | None = None,
         market_breadth_refresh_interval_seconds: float = 15,
+        security_searcher: Callable[[str], list[SecuritySearchResult]] | None = None,
     ) -> None:
         super().__init__()
         self._engine_factory = engine_factory
@@ -210,6 +214,7 @@ class MainWindow(QMainWindow):
         self._system_tray_available = system_tray_available or QSystemTrayIcon.isSystemTrayAvailable
         self._market_breadth_fetcher = market_breadth_fetcher
         self._market_breadth_refresh_interval_seconds = market_breadth_refresh_interval_seconds
+        self._security_searcher = security_searcher
         self._market_breadth: MarketBreadth | None = None
         self._market_breadth_update_active = False
         self._next_market_breadth_update_at = 0.0
@@ -258,13 +263,14 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         self._monitor_status = QLabel("已停止")
         self._symbol_input = QLineEdit(self._initial_symbol)
+        self._symbol_input.setPlaceholderText("输入六位代码或中文名称")
         self._period_selector = QComboBox()
         self._period_selector.addItems(self._monitoring_periods)
         self._period_selector.setCurrentText(self._default_monitoring_period)
         self._buy_threshold = self._create_threshold_input(self._default_buy_rsi_threshold)
         self._sell_threshold = self._create_threshold_input(self._default_sell_rsi_threshold)
         self._notification_status = QLabel("--")
-        self._auto_hide_chart_checkbox = QCheckBox("点击图表外区域后自动关闭")
+        self._auto_hide_chart_checkbox = QCheckBox("点击K线图外区域后自动关闭")
         self._auto_hide_chart_checkbox.setChecked(self._initial_chart_auto_hide)
         self._show_call_auction_checkbox = QCheckBox("显示集合竞价（09:15–09:25）")
         self._show_call_auction_checkbox.setChecked(self._initial_show_call_auction)
@@ -272,7 +278,7 @@ class MainWindow(QMainWindow):
         self._events.setReadOnly(True)
 
         controls = QFormLayout()
-        controls.addRow("输入代码：", self._symbol_input)
+        controls.addRow("输入代码/名称：", self._symbol_input)
         controls.addRow("监控周期：", self._period_selector)
         controls.addRow(f"买入 RSI({self._signal_rsi_period}) ≤：", self._buy_threshold)
         controls.addRow(f"卖出 RSI({self._signal_rsi_period}) ≥：", self._sell_threshold)
@@ -404,9 +410,9 @@ class MainWindow(QMainWindow):
         return self._tray_icon is not None
 
     def add_monitor(self) -> None:
-        symbol = self._symbol_input.text().strip().upper()
-        if not symbol:
-            self._append_event("添加失败：请输入股票/ETF 代码")
+        query = self._symbol_input.text().strip()
+        symbol = self._resolve_symbol(query)
+        if symbol is None:
             return
         if any(session.symbol == symbol for session in self._sessions):
             self._append_event(f"{symbol} 已在监控列表中")
@@ -428,6 +434,44 @@ class MainWindow(QMainWindow):
         self._append_event(f"已添加 {symbol}（{period}）")
         if self._timer.isActive():
             self._poll_due_monitors()
+
+    def _resolve_symbol(self, query: str) -> str | None:
+        if not query:
+            self._append_event("添加失败：请输入股票/ETF 代码或中文名称")
+            return None
+        if re.fullmatch(r"\d{6}", query):
+            return query
+        if self._security_searcher is None:
+            self._append_event("添加失败：名称搜索不可用，请输入六位代码")
+            return None
+
+        try:
+            results = self._security_searcher(query)
+        except Exception as error:
+            self._logger.exception("搜索证券名称失败：%s", query)
+            self._append_event(f"搜索失败：{error}")
+            return None
+        if not results:
+            self._append_event(f"未找到“{query}”对应的股票或 ETF")
+            return None
+
+        if len(results) == 1:
+            selected = results[0]
+        else:
+            options = [f"{result.name}（{result.symbol}）" for result in results]
+            selected_text, accepted = QInputDialog.getItem(
+                self,
+                "选择监控标的",
+                f"“{query}”找到多个结果，请选择：",
+                options,
+                0,
+                False,
+            )
+            if not accepted:
+                return None
+            selected = results[options.index(selected_text)]
+        self._symbol_input.setText(selected.symbol)
+        return selected.symbol
 
     def remove_selected_monitor(self) -> None:
         row = self._selected_row()
@@ -688,6 +732,7 @@ class MainWindow(QMainWindow):
         )
 
     def _toggle_intraday_chart(self, symbol: str) -> None:
+        self._intraday_chart.cancel_pending_outside_click_hide()
         if self._intraday_chart.isVisible() and self._chart_symbol == symbol:
             self._intraday_chart.hide()
             return

@@ -17,7 +17,7 @@ py -3 -m rsi_monitor
 
 Windows 电脑也可以双击项目目录中的 `run_windows.bat`，脚本会检查 Python 版本、安装依赖并启动程序。电脑需要预先安装 Python 3.12 或更高版本，并能访问网络；也可以直接运行 `run_windows.ps1`。
 
-如果不想安装 Python，可以在 [GitHub Releases](https://github.com/ChunLinH/RSI/releases/tag/v0.1.0) 下载 Windows 独立版，解压后双击 `RSIWatch\RSIWatch.exe` 即可运行。
+如果不想安装 Python，可以在 [GitHub Releases](https://github.com/ChunLinH/RSI/releases/tag/v0.1.1) 下载 Windows 独立版，解压后双击 `RSIWatch.exe` 即可运行。独立版为单文件程序，不需要额外的 `_internal` 或 `config` 文件夹；首次运行时会自动创建可编辑的配置文件。
 
 ## Windows 桌面程序
 
@@ -27,9 +27,9 @@ Windows 电脑也可以双击项目目录中的 `run_windows.bat`，脚本会检
 .\build_windows_app.ps1
 ```
 
-之后双击 `dist\RSIWatch\RSIWatch.exe` 即可启动，不会打开终端窗口。打包后的可修改配置在 `dist\RSIWatch\config\settings.ini`；如果没有该文件，程序会自动从同目录的 `settings.example.ini` 创建。
+之后双击项目根目录下的 `RSIWatch.exe` 即可启动，不会打开终端窗口。可修改配置在 `config\settings.ini`；如果没有该文件，程序会从 exe 内置的 `settings.example.ini` 创建。独立版为单文件程序，Qt 运行库已内置在 exe 中。
 
-程序默认读取 `config/settings.ini`。国内行情无需 API Key；界面可输入六位 A 股或 ETF 代码并选择 1、5、15 分钟周期。添加标的后会加载最近的分钟 K 线，因此可立即显示 RSI；随后每秒以实时价格更新当前 K 线和 RSI。刷新间隔可在 `app.refresh_interval_seconds` 配置。监控清单保存在 Windows 本地数据目录 `%LOCALAPPDATA%\\RSIWatch\\monitor_sessions.json`，重启或更新 EXE 后都会自动恢复；为避免重启时意外发送提醒，恢复后需手动点击“开始全部监控”。点击窗口右上角 × 会将程序隐藏到 Windows 系统托盘，监控继续运行；双击托盘图标可恢复窗口，右键菜单中的“退出程序”才会真正结束监控。
+程序默认读取 `config/settings.ini`。国内行情无需 API Key；界面可输入六位 A 股/ETF 代码，也可以输入中文公司名或 ETF 名称搜索添加，并选择 1、5、15 分钟周期。搜索到多个同名或相近标的时会弹出候选列表供选择。添加标的后会加载最近的分钟 K 线，因此可立即显示 RSI；随后每秒以实时价格更新当前 K 线和 RSI。刷新间隔可在 `app.refresh_interval_seconds` 配置。监控清单保存在 Windows 本地数据目录 `%LOCALAPPDATA%\\RSIWatch\\monitor_sessions.json`，重启或更新 EXE 后都会自动恢复；为避免重启时意外发送提醒，恢复后需手动点击“开始全部监控”。点击窗口右上角 × 会将程序隐藏到 Windows 系统托盘，监控继续运行；双击托盘图标可恢复窗口，右键菜单中的“退出程序”才会真正结束监控。
 
 主窗口最小化后会显示透明置顶行情条。单击任意股票行会在行情条旁边打开该标的的分时价格图；空间不足时自动改到另一侧。单击另一行可切换标的，图表右上角 `×` 只关闭图表，双击行情条仍可恢复主窗口。
 

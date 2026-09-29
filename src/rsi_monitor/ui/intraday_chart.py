@@ -55,6 +55,11 @@ class IntradayChartPanel(QWidget):
     _EXPANDED_WIDTH = 960
     _COMPACT_WIDTH = 720
     _WINDOW_HEIGHT = 560
+    # K 线缩放遵循固定 bar spacing：数据少时保持紧凑，数据多时仍可铺满图框。
+    _BAR_SLOT_MIN = 2.5
+    _BAR_SLOT_MAX = 18.0
+    _BAR_BODY_RATIO = 0.8
+    _BAR_BODY_MAX = 14.0
     _QUICK_PERIODS = (
         ("intraday", "分时"),
         ("5min", "5分"),
@@ -101,6 +106,7 @@ class IntradayChartPanel(QWidget):
         self._quote_panel_collapsed = quote_panel_collapsed
         self._close_rect = QRectF()
         self._auto_hide_on_focus_loss = True
+        self._outside_click_hide_pending = False
         self._focus_loss_timer = QTimer(self)
         self._focus_loss_timer.setSingleShot(True)
         self._focus_loss_timer.setInterval(80)
@@ -145,6 +151,8 @@ class IntradayChartPanel(QWidget):
 
     def set_auto_hide_on_focus_loss(self, enabled: bool) -> None:
         self._auto_hide_on_focus_loss = enabled
+        if not enabled:
+            self._focus_loss_timer.stop()
 
     def set_data(self, data: MarketChartData) -> None:
         changed_chart = (
@@ -197,6 +205,8 @@ class IntradayChartPanel(QWidget):
             self._event_filter_installed = True
 
     def hideEvent(self, event) -> None:
+        self._focus_loss_timer.stop()
+        self._outside_click_hide_pending = False
         application = QApplication.instance()
         if application is not None and self._event_filter_installed:
             application.removeEventFilter(self)
@@ -1269,8 +1279,9 @@ class IntradayChartPanel(QWidget):
         if not bars:
             return ()
         if period != "intraday":
-            width = chart.width() / max(len(bars), 1)
-            return tuple(chart.left() + (index + 0.5) * width for index in range(len(bars)))
+            slot = cls._bar_slot_width(chart.width(), len(bars))
+            first = chart.right() - slot * (len(bars) - 0.5)
+            return tuple(first + index * slot for index in range(len(bars)))
         has_auction = any(bar.timestamp.time() < clock_time(9, 30) for bar in bars)
         auction_width = cls._AUCTION_WIDTH_RATIO if has_auction else 0.0
         return tuple(
@@ -1308,8 +1319,19 @@ class IntradayChartPanel(QWidget):
         normal_ratio = max(0.0, min(trading_seconds / (4 * 60 * 60), 1.0))
         return auction_width + normal_ratio * (1 - auction_width)
 
-    @staticmethod
+    @classmethod
+    def _bar_slot_width(cls, chart_width: float, bar_count: int) -> float:
+        if chart_width <= 0 or bar_count <= 0:
+            return 0.0
+        natural_slot = chart_width / bar_count
+        # 数据量极大时不能为了满足最小槽位而把首根柱推到图框外。
+        if natural_slot < cls._BAR_SLOT_MIN:
+            return natural_slot
+        return min(natural_slot, cls._BAR_SLOT_MAX)
+
+    @classmethod
     def _bar_body_width(
+        cls,
         chart: QRectF, x_positions: tuple[float, ...], bar_count: int
     ) -> float:
         if len(x_positions) > 1:
@@ -1318,10 +1340,10 @@ class IntradayChartPanel(QWidget):
                 for left, right in zip(x_positions, x_positions[1:])
                 if right > left
             ]
-            slot = min(gaps) if gaps else chart.width() / max(bar_count, 1)
+            slot = min(gaps) if gaps else cls._bar_slot_width(chart.width(), bar_count)
         else:
-            slot = chart.width() / 242
-        return max(min(slot * 0.72, 8), 1)
+            slot = cls._bar_slot_width(chart.width(), bar_count)
+        return max(min(slot * cls._BAR_BODY_RATIO, cls._BAR_BODY_MAX), 1)
 
     @staticmethod
     def _draw_series(
@@ -1461,7 +1483,7 @@ class IntradayChartPanel(QWidget):
         count = end - start
         if count <= 0 or count >= total_bars or chart_width <= 0:
             return start, end
-        bar_width = chart_width / count
+        bar_width = self._bar_slot_width(chart_width, count)
         bar_shift = round(-delta_pixels / bar_width)
         new_start = max(0, min(start + bar_shift, total_bars - count))
         new_end = new_start + count
@@ -1782,16 +1804,92 @@ class IntradayChartPanel(QWidget):
         return super().event(event)
 
     def eventFilter(self, watched, event: QEvent) -> bool:
-        if self.isVisible() and isinstance(event, QKeyEvent):
-            if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_PageUp:
-                self.period_step_requested.emit(-1)
-                event.accept()
-                return True
-            if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_PageDown:
-                self.period_step_requested.emit(1)
-                event.accept()
-                return True
+        if self.isVisible():
+            # 点击 Windows 桌面或其它应用时没有 Qt 鼠标释放事件，只能依赖应用失活通知。
+            if (
+                self._auto_hide_on_focus_loss
+                and event.type() is QEvent.Type.ApplicationDeactivate
+                and QApplication.activePopupWidget() is None
+            ):
+                self._schedule_hide_after_outside_click()
+            if self._auto_hide_on_focus_loss and (
+                isinstance(event, QMouseEvent)
+                and event.type() == QEvent.Type.MouseButtonRelease
+            ):
+                self._hide_if_clicked_outside(watched, event)
+            if isinstance(event, QKeyEvent):
+                if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_PageUp:
+                    self.period_step_requested.emit(-1)
+                    event.accept()
+                    return True
+                if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_PageDown:
+                    self.period_step_requested.emit(1)
+                    event.accept()
+                    return True
         return super().eventFilter(watched, event)
+
+    def _hide_if_clicked_outside(self, watched, event: QMouseEvent) -> None:
+        if QApplication.activePopupWidget() is not None:
+            self.cancel_pending_outside_click_hide()
+            return
+        if self._is_popup_widget(watched):
+            self.cancel_pending_outside_click_hide()
+            return
+        global_position = event.globalPosition().toPoint()
+        if self.frameGeometry().contains(global_position):
+            local_position = self.mapFromGlobal(global_position)
+            if self._is_chart_plot_position(local_position):
+                self.cancel_pending_outside_click_hide()
+                return
+        self._schedule_hide_after_outside_click()
+
+    def _is_popup_widget(self, watched) -> bool:
+        if not isinstance(watched, QWidget):
+            return False
+        current = watched
+        while current is not None:
+            if current.windowType() == Qt.WindowType.Popup:
+                return True
+            current = current.parentWidget()
+        return False
+
+    def _is_chart_plot_position(self, position: QPointF) -> bool:
+        """保留图表绘图区和图表控件的交互，其余详情区域用于关闭图表。"""
+        point = QPointF(position).toPoint()
+        position_f = QPointF(position)
+        main_chart, volume_chart, indicator_chart = self._chart_rectangles()
+        if any(
+            chart.contains(position_f)
+            for chart in (main_chart, volume_chart, indicator_chart)
+        ):
+            return True
+        if self._click_region(position_f) is not None:
+            return True
+        return any(
+            widget.isVisible() and widget.geometry().contains(point)
+            for widget in (
+                self._indicator_selector,
+                self._period_selector,
+                self._quote_panel_toggle,
+            )
+        )
+
+    def cancel_pending_outside_click_hide(self) -> None:
+        """取消由悬浮条换股动作触发的延迟关闭。"""
+        self._outside_click_hide_pending = False
+
+    def _schedule_hide_after_outside_click(self) -> None:
+        if self._outside_click_hide_pending:
+            return
+        self._outside_click_hide_pending = True
+        QTimer.singleShot(0, self._hide_after_outside_click)
+
+    def _hide_after_outside_click(self) -> None:
+        if not self._outside_click_hide_pending:
+            return
+        self._outside_click_hide_pending = False
+        if self._auto_hide_on_focus_loss and self.isVisible():
+            self.hide()
 
     def _hide_if_inactive(self) -> None:
         if not self._auto_hide_on_focus_loss:

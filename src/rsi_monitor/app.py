@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 from rsi_monitor.config import AppConfig, load_config
 from rsi_monitor.indicators.rsi import RsiCalculator
 from rsi_monitor.market_data.breadth import EastmoneyMarketBreadthProvider
+from rsi_monitor.market_data.security_search import TencentSecuritySearcher
 from rsi_monitor.market_data.tencent_china import TencentChinaMarketDataProvider
 from rsi_monitor.monitoring.engine import MonitorEngine
 from rsi_monitor.monitoring.session_store import MonitorSessionStore
@@ -50,6 +51,10 @@ def ensure_config_file(project_root: Path) -> Path:
         return config_path
 
     template_path = config_directory / "settings.example.ini"
+    if not template_path.exists():
+        bundle_root = getattr(sys, "_MEIPASS", None)
+        if bundle_root:
+            template_path = Path(bundle_root) / "config" / "settings.example.ini"
     if not template_path.exists():
         raise RuntimeError(f"缺少配置模板：{template_path}")
 
@@ -146,6 +151,11 @@ def main() -> None:
         max_retries=config.max_retries,
         retry_delay_seconds=config.retry_delay_seconds,
     )
+    security_searcher = TencentSecuritySearcher(
+        timeout_seconds=min(config.market_request_timeout_seconds, 3),
+        max_retries=1,
+        retry_delay_seconds=0,
+    )
     preferences_store = create_ui_preferences_store(project_root)
     preferences = preferences_store.load(
         UiPreferences(
@@ -181,6 +191,7 @@ def main() -> None:
         preference_saver=preferences_store.save,
         chart_refresh_interval_seconds=config.chart_refresh_interval_seconds,
         market_breadth_fetcher=market_breadth_provider.fetch_all_a,
+        security_searcher=security_searcher.search,
     )
     application.setQuitOnLastWindowClosed(not window.has_system_tray)
     window.show()

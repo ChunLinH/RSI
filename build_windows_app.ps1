@@ -1,50 +1,57 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $projectRoot
-$releaseDirectory = Join-Path $projectRoot "dist\RSIWatch"
-$settingsPath = Join-Path $releaseDirectory "config\settings.ini"
+$releasePath = Join-Path $projectRoot "RSIWatch.exe"
+$configDirectory = Join-Path $projectRoot "config"
 $stagingRoot = Join-Path $projectRoot "dist-staging"
-$stagedReleaseDirectory = Join-Path $stagingRoot "RSIWatch"
-$previousReleaseDirectory = Join-Path $projectRoot "dist\RSIWatch-previous"
+$buildRoot = Join-Path $projectRoot "build-staging"
+$stagedReleasePath = Join-Path $stagingRoot "RSIWatch.exe"
 
 $runningApp = Get-CimInstance Win32_Process -Filter "Name = 'RSIWatch.exe'" |
-    Where-Object { $_.ExecutablePath -eq (Join-Path $releaseDirectory "RSIWatch.exe") }
+    Where-Object { $_.ExecutablePath -eq $releasePath }
 if ($runningApp) {
-    throw "RSIWatch 正在运行，请从系统托盘退出程序后重新打包。"
+    throw "$releasePath 正在运行，请从系统托盘退出程序后重新打包。"
 }
 
 py -3 -m pip install -r requirements.txt
 if ($LASTEXITCODE -ne 0) {
     throw "依赖安装失败，退出码：$LASTEXITCODE"
 }
-
-Remove-Item -Recurse -Force $stagingRoot -ErrorAction SilentlyContinue
-py -3 -m PyInstaller --noconfirm --clean --windowed --name RSIWatch --paths src `
-    --distpath $stagingRoot src\rsi_monitor\__main__.py
-if ($LASTEXITCODE -ne 0) {
-    throw "桌面版打包失败，退出码：$LASTEXITCODE"
+$pySideDirectory = (py -3 -c "import pathlib, PySide6; print(pathlib.Path(PySide6.__file__).parent)").Trim()
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $pySideDirectory)) {
+    throw "无法定位 PySide6 运行库目录。"
 }
 
-New-Item -ItemType Directory -Force -Path (Join-Path $stagedReleaseDirectory "config") | Out-Null
-Copy-Item -Force config\settings.example.ini (Join-Path $stagedReleaseDirectory "config\settings.example.ini")
-if (Test-Path $settingsPath) {
-    Copy-Item -Force $settingsPath (Join-Path $stagedReleaseDirectory "config\settings.ini")
-} elseif (Test-Path config\settings.ini) {
-    Copy-Item -Force config\settings.ini (Join-Path $stagedReleaseDirectory "config\settings.ini")
-}
-
-Remove-Item -Recurse -Force $previousReleaseDirectory -ErrorAction SilentlyContinue
-if (Test-Path $releaseDirectory) {
-    Move-Item $releaseDirectory $previousReleaseDirectory
-}
-try {
-    Move-Item $stagedReleaseDirectory $releaseDirectory
-} catch {
-    if ((Test-Path $previousReleaseDirectory) -and -not (Test-Path $releaseDirectory)) {
-        Move-Item $previousReleaseDirectory $releaseDirectory
+Remove-Item -Recurse -Force $stagingRoot, $buildRoot -ErrorAction SilentlyContinue
+$buildPathEntries = @(
+    $env:PATH -split [IO.Path]::PathSeparator | Where-Object {
+        $entry = $_.Trim()
+        $entry -and -not (Test-Path (Join-Path $entry "icudt78.dll"))
     }
-    throw
+)
+$originalPath = $env:PATH
+try {
+    $env:PATH = $buildPathEntries -join [IO.Path]::PathSeparator
+    py -3 -m PyInstaller --noconfirm --clean --onefile --windowed --name RSIWatch --paths src `
+        --distpath $stagingRoot --workpath $buildRoot --specpath $stagingRoot `
+        --add-data "$projectRoot\config\settings.example.ini;config" `
+        --add-binary "$pySideDirectory\concrt140.dll;PySide6" `
+        --add-binary "$pySideDirectory\msvcp140_codecvt_ids.dll;PySide6" `
+        src\rsi_monitor\__main__.py
+    $pyInstallerExitCode = $LASTEXITCODE
+} finally {
+    $env:PATH = $originalPath
 }
-Remove-Item -Recurse -Force $previousReleaseDirectory -ErrorAction SilentlyContinue
+if ($pyInstallerExitCode -ne 0) {
+    throw "桌面版打包失败，退出码：$pyInstallerExitCode"
+}
+
+New-Item -ItemType Directory -Force -Path $configDirectory | Out-Null
+
+if (Test-Path $releasePath) {
+    Remove-Item -Force $releasePath
+}
+Move-Item -Force $stagedReleasePath $releasePath
 Remove-Item -Recurse -Force $stagingRoot -ErrorAction SilentlyContinue
-Write-Host "已生成：dist\RSIWatch\RSIWatch.exe"
+Remove-Item -Recurse -Force $buildRoot -ErrorAction SilentlyContinue
+Write-Host "已生成：$releasePath"

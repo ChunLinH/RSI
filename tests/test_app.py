@@ -1,3 +1,4 @@
+import sys
 from types import SimpleNamespace
 
 from rsi_monitor.app import create_monitor_session_store, ensure_config_file
@@ -25,6 +26,23 @@ def test_ensure_config_file_preserves_existing_settings(tmp_path) -> None:
 
     assert ensure_config_file(tmp_path / "project") == config_path
     assert config_path.read_text(encoding="utf-8") == "custom"
+
+
+def test_ensure_config_file_uses_embedded_template(tmp_path, monkeypatch) -> None:
+    bundle_root = tmp_path / "bundle"
+    bundled_config = bundle_root / "config"
+    bundled_config.mkdir(parents=True)
+    bundled_template = bundled_config / "settings.example.ini"
+    bundled_template.write_text("[app]\nsymbol = 000001\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "_MEIPASS", str(bundle_root), raising=False)
+
+    project_root = tmp_path / "project"
+    config_path = ensure_config_file(project_root)
+
+    assert config_path == project_root / "config" / "settings.ini"
+    assert config_path.read_text(encoding="utf-8") == bundled_template.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_monitor_session_store_uses_windows_user_data_directory(tmp_path, monkeypatch) -> None:

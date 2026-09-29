@@ -35,6 +35,37 @@ def create_chart_data(period: str = "intraday") -> MarketChartData:
     )
 
 
+def send_mouse_click(target: QWidget, global_position: QPoint) -> None:
+    local_position = QPointF(10, 10)
+    for event_type, buttons in (
+        (QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton),
+        (QEvent.Type.MouseButtonRelease, Qt.MouseButton.NoButton),
+    ):
+        QApplication.sendEvent(
+            target,
+            QMouseEvent(
+                event_type,
+                local_position,
+                local_position,
+                QPointF(global_position),
+                Qt.MouseButton.LeftButton,
+                buttons,
+                Qt.KeyboardModifier.NoModifier,
+            ),
+        )
+    QApplication.processEvents()
+
+
+class ReopeningWidget(QWidget):
+    def __init__(self, reopen_callback) -> None:
+        super().__init__()
+        self._reopen_callback = reopen_callback
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._reopen_callback()
+        super().mouseReleaseEvent(event)
+
+
 def test_market_chart_accepts_live_data_and_renders(qtbot) -> None:
     panel = IntradayChartPanel()
     qtbot.addWidget(panel)
@@ -157,6 +188,30 @@ def test_page_keys_request_period_changes_and_indicator_is_selectable(qtbot) -> 
     assert requested_steps == [1, -1]
     assert selected_periods == ["15min"]
     assert panel.indicator == "macd"
+
+
+def test_chart_stays_open_for_popup_child_owned_by_chart(qtbot) -> None:
+    panel = IntradayChartPanel("rsi")
+    qtbot.addWidget(panel)
+    panel.show()
+    qtbot.waitExposed(panel)
+
+    popup = QWidget(panel, Qt.WindowType.Popup)
+    popup_child = QWidget(popup)
+    popup_child.resize(20, 20)
+    event = QMouseEvent(
+        QEvent.Type.MouseButtonRelease,
+        QPointF(10, 10),
+        QPointF(10, 10),
+        QPointF(panel.frameGeometry().bottomRight() + QPoint(100, 100)),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    panel._hide_if_clicked_outside(popup_child, event)
+    QApplication.processEvents()
+
+    assert panel.isVisible()
 
 
 def test_page_shortcuts_work_when_closed_period_selector_has_focus(qtbot) -> None:
@@ -439,6 +494,63 @@ def test_non_intraday_zoom_changes_visible_bar_count() -> None:
     assert zoomed_in == 144
     assert len(visible) == 144
     assert zoomed_out == 180
+
+
+def test_zoomed_kline_uses_compact_right_aligned_slots() -> None:
+    panel = IntradayChartPanel()
+    chart = QRectF(48, 0, 656, 300)
+    bars = tuple(
+        MarketBar(datetime(2026, 1, 1) + timedelta(days=index), 1, 1, 1, 1, 1)
+        for index in range(20)
+    )
+
+    positions = panel._bar_x_positions(chart, bars, "day")
+    slot = panel._bar_slot_width(chart.width(), len(bars))
+    body_width = panel._bar_body_width(chart, positions, len(bars))
+
+    assert slot == panel._BAR_SLOT_MAX
+    assert positions[-1] == pytest.approx(chart.right() - slot / 2)
+    assert positions[0] == pytest.approx(chart.right() - slot * (len(bars) - 0.5))
+    assert all(
+        right - left == pytest.approx(slot)
+        for left, right in zip(positions, positions[1:])
+    )
+    assert body_width == pytest.approx(panel._BAR_BODY_MAX)
+    assert body_width > 8
+
+
+def test_normal_kline_count_still_fills_chart_width() -> None:
+    panel = IntradayChartPanel()
+    chart = QRectF(48, 0, 656, 300)
+    bars = tuple(
+        MarketBar(datetime(2026, 1, 1) + timedelta(days=index), 1, 1, 1, 1, 1)
+        for index in range(180)
+    )
+
+    positions = panel._bar_x_positions(chart, bars, "day")
+    slot = panel._bar_slot_width(chart.width(), len(bars))
+
+    assert slot < panel._BAR_SLOT_MAX
+    assert positions[0] == pytest.approx(chart.left() + slot / 2)
+    assert positions[-1] == pytest.approx(chart.right() - slot / 2)
+
+
+def test_kline_pan_uses_compact_slot_width() -> None:
+    panel = IntradayChartPanel()
+    chart_width = 656.0
+    panel._zoom_ranges["day"] = (100, 120, 240)
+    slot = panel._bar_slot_width(chart_width, 20)
+
+    start, end = panel._apply_pan_delta(
+        "day",
+        240,
+        100,
+        120,
+        -slot * 2,
+        chart_width,
+    )
+
+    assert (start, end) == (102, 122)
 
 
 def test_intraday_quote_panel_uses_right_cards() -> None:
@@ -758,6 +870,7 @@ def test_header_tabs_and_refresh_are_directly_clickable(qtbot) -> None:
     assert selected_periods == ["day"]
     assert panel.indicator == "macd"
     assert refreshed == [True]
+    assert panel.isVisible()
 
 
 def test_chart_auto_hides_after_losing_focus_and_switch_can_disable_it(qtbot) -> None:
@@ -778,5 +891,148 @@ def test_chart_auto_hides_after_losing_focus_and_switch_can_disable_it(qtbot) ->
     panel.show()
     QApplication.sendEvent(panel, QEvent(QEvent.Type.WindowDeactivate))
     qtbot.wait(120)
+
+    assert panel.isVisible()
+
+
+def test_chart_hides_when_application_deactivates(qtbot) -> None:
+    panel = IntradayChartPanel()
+    qtbot.addWidget(panel)
+    panel.show()
+    qtbot.waitExposed(panel)
+
+    application = QApplication.instance()
+    assert application is not None
+    QApplication.sendEvent(application, QEvent(QEvent.Type.ApplicationDeactivate))
+    qtbot.wait(20)
+
+    assert not panel.isVisible()
+
+
+def test_chart_hides_when_application_receives_click_outside_chart(qtbot) -> None:
+    panel = IntradayChartPanel()
+    outside = QWidget()
+    qtbot.addWidget(panel)
+    qtbot.addWidget(outside)
+    panel.show()
+    outside.show()
+    qtbot.waitExposed(panel)
+    qtbot.waitExposed(outside)
+
+    outside_position = panel.frameGeometry().bottomRight() + QPoint(100, 100)
+    send_mouse_click(outside, outside_position)
+
+    assert not panel.isVisible()
+
+
+@pytest.mark.parametrize("position_name", ("overview", "order_book", "header"))
+def test_chart_hides_when_clicking_detail_panel_outside_plot(
+    qtbot, position_name: str
+) -> None:
+    panel = IntradayChartPanel()
+    qtbot.addWidget(panel)
+    panel.set_data(create_chart_data())
+    panel.show()
+    qtbot.waitExposed(panel)
+
+    positions = {
+        "overview": panel._overview_rect().center().toPoint(),
+        "order_book": panel._order_book_rect().center().toPoint(),
+        "header": QPoint(100, 20),
+    }
+    QTest.mouseClick(
+        panel,
+        Qt.MouseButton.LeftButton,
+        pos=positions[position_name],
+    )
+    qtbot.wait(20)
+
+    assert not panel.isVisible()
+
+
+def test_chart_stays_open_when_clicking_chart_plot(qtbot) -> None:
+    panel = IntradayChartPanel()
+    qtbot.addWidget(panel)
+    panel.set_data(create_chart_data())
+    panel.show()
+    qtbot.waitExposed(panel)
+
+    main_chart, _, _ = panel._chart_rectangles()
+    QTest.mouseClick(
+        panel,
+        Qt.MouseButton.LeftButton,
+        pos=main_chart.center().toPoint(),
+    )
+    qtbot.wait(20)
+
+    assert panel.isVisible()
+
+
+def test_reopening_chart_cancels_pending_outside_hide(qtbot) -> None:
+    panel = IntradayChartPanel()
+    qtbot.addWidget(panel)
+    panel.show()
+    qtbot.waitExposed(panel)
+
+    panel._schedule_hide_after_outside_click()
+    panel.cancel_pending_outside_click_hide()
+    qtbot.wait(20)
+
+    assert panel.isVisible()
+
+
+def test_chart_hides_when_clicking_related_floating_widget(qtbot) -> None:
+    panel = IntradayChartPanel()
+    floating_widget = QWidget()
+    qtbot.addWidget(panel)
+    qtbot.addWidget(floating_widget)
+    panel.show()
+    floating_widget.show()
+    qtbot.waitExposed(panel)
+    qtbot.waitExposed(floating_widget)
+
+    floating_position = panel.frameGeometry().bottomRight() + QPoint(100, 100)
+    floating_widget.setGeometry(
+        floating_position.x(), floating_position.y(), 20, 20
+    )
+    assert floating_widget.frameGeometry().contains(floating_position)
+    assert not panel.frameGeometry().contains(floating_position)
+    send_mouse_click(floating_widget, floating_position)
+
+    assert not panel.isVisible()
+
+
+def test_outside_click_wins_over_release_handler_that_reopens_chart(qtbot) -> None:
+    panel = IntradayChartPanel()
+    outside = ReopeningWidget(panel.show)
+    qtbot.addWidget(panel)
+    qtbot.addWidget(outside)
+    panel.show()
+    outside.show()
+    qtbot.waitExposed(panel)
+    qtbot.waitExposed(outside)
+
+    outside_position = panel.frameGeometry().bottomRight() + QPoint(100, 100)
+    outside.setGeometry(
+        outside_position.x(), outside_position.y(), 20, 20
+    )
+    send_mouse_click(outside, outside_position)
+
+    assert not panel.isVisible()
+
+
+def test_chart_outside_click_respects_disabled_auto_hide(qtbot) -> None:
+    panel = IntradayChartPanel()
+    outside = QWidget()
+    qtbot.addWidget(panel)
+    qtbot.addWidget(outside)
+    panel.set_auto_hide_on_focus_loss(False)
+    panel.show()
+    outside.show()
+    qtbot.waitExposed(panel)
+    qtbot.waitExposed(outside)
+
+    outside_position = panel.frameGeometry().bottomRight() + QPoint(100, 100)
+    send_mouse_click(outside, outside_position)
 
     assert panel.isVisible()

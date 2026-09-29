@@ -14,6 +14,7 @@ from rsi_monitor.market_data.base import (
     MarketQuote,
 )
 from rsi_monitor.market_data.breadth import MarketBreadth
+from rsi_monitor.market_data.security_search import SecuritySearchResult
 from rsi_monitor.monitoring.engine import MonitorEngine, MonitorSnapshot
 from rsi_monitor.monitoring.session_store import MonitorDefinition
 from rsi_monitor.notifications.console import ConsoleNotificationService
@@ -153,6 +154,45 @@ def test_window_restores_saved_monitor_list(qtbot) -> None:
     assert window._table.item(0, window._sell_threshold_column).text() == "75.0"
     assert window._timer.isActive()
     window.stop_monitoring()
+
+
+def test_window_resolves_chinese_security_name_before_adding_monitor(qtbot) -> None:
+    searched_queries: list[str] = []
+
+    def create_test_engine(symbol: str, period: str, buy: float, sell: float) -> MonitorEngine:
+        assert symbol == "600000"
+        return MonitorEngine(
+            provider=OneQuoteProvider(symbol),
+            rsi_calculator=RsiCalculator(2),
+            signal_detector=SignalDetector(buy, sell),
+            notifier=ConsoleNotificationService(),
+            price_history_size=10,
+        )
+
+    def search_security(query: str) -> list[SecuritySearchResult]:
+        searched_queries.append(query)
+        return [SecuritySearchResult("600000", "浦发银行", "sh")]
+
+    window = MainWindow(
+        engine_factory=create_test_engine,
+        initial_symbol="159952",
+        monitoring_periods=("1min",),
+        default_monitoring_period="1min",
+        default_buy_rsi_threshold=30,
+        default_sell_rsi_threshold=70,
+        test_notification_sender=lambda symbol, period: NotificationResult(True, "已发送"),
+        security_searcher=search_security,
+        system_tray_available=lambda: False,
+    )
+    qtbot.addWidget(window)
+
+    window._symbol_input.setText("浦发银行")
+    window.add_monitor()
+
+    assert searched_queries == ["浦发银行"]
+    assert window._symbol_input.text() == "600000"
+    assert window._sessions[0].symbol == "600000"
+    assert window._table.item(0, 0).text() == "600000"
 
 
 def test_window_close_hides_to_system_tray_and_keeps_monitoring(qtbot) -> None:
