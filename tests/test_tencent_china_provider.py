@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from rsi_monitor.market_data.base import MarketQuote
+from rsi_monitor.market_data.base import MarketDataError, MarketQuote
 from rsi_monitor.market_data.tencent_china import TencentChinaMarketDataProvider
 
 
@@ -292,3 +292,69 @@ def test_five_day_series_uses_close_before_earliest_day(monkeypatch) -> None:
         "2026-08-21",
         "2026-08-25",
     ]
+
+
+@pytest.mark.parametrize("period", ("day", "week"))
+def test_fetches_long_kline_history_before_timestamp(monkeypatch, period) -> None:
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        key = f"qfq{period}"
+        return FakeResponse(
+            '{"code":0,"msg":"","data":{"sz159952":{'
+            f'"qt":{{"sz159952":["51","创业板ETF"]}},"{key}":['
+            '["2024-12-30","2.10","2.11","2.12","2.09","1"],'
+            '["2024-12-31","2.11","2.12","2.13","2.10","2"]'
+            ']}}}'
+        )
+
+    monkeypatch.setattr("rsi_monitor.market_data.tencent_china.urlopen", fake_urlopen)
+    provider = TencentChinaMarketDataProvider("159952", 3, 1, 0)
+
+    series = provider.fetch_chart_series_before(
+        period, datetime(2025, 1, 2), 240
+    )
+
+    parameters = parse_qs(urlparse(captured["url"]).query)
+    assert parameters["param"] == [f"sz159952,{period},,2025-01-01,240,qfq"]
+    assert series is not None
+    assert [bar.timestamp.strftime("%Y-%m-%d") for bar in series.bars] == [
+        "2024-12-30",
+        "2024-12-31",
+    ]
+
+
+def test_empty_long_kline_history_is_reported_without_retry(monkeypatch) -> None:
+    calls = []
+
+    def fake_urlopen(request, timeout):
+        calls.append(request.full_url)
+        return FakeResponse(
+            '{"code":0,"msg":"","data":{"sz159952":{'
+            '"qfqday":[]}}}'
+        )
+
+    monkeypatch.setattr("rsi_monitor.market_data.tencent_china.urlopen", fake_urlopen)
+    provider = TencentChinaMarketDataProvider("159952", 3, 3, 0)
+
+    assert provider.fetch_chart_series_before("day", datetime(2025, 1, 2), 240) is None
+    assert len(calls) == 1
+
+
+def test_missing_long_kline_field_is_retried_as_an_error(monkeypatch) -> None:
+    calls = []
+
+    def fake_urlopen(request, timeout):
+        calls.append(request.full_url)
+        return FakeResponse(
+            '{"code":0,"msg":"","data":{"sz159952":{'
+            '"qt":{"sz159952":["51","创业板ETF"]}}}}'
+        )
+
+    monkeypatch.setattr("rsi_monitor.market_data.tencent_china.urlopen", fake_urlopen)
+    provider = TencentChinaMarketDataProvider("159952", 3, 2, 0)
+
+    with pytest.raises(MarketDataError):
+        provider.fetch_chart_series_before("day", datetime(2025, 1, 2), 240)
+    assert len(calls) == 2

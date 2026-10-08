@@ -8,6 +8,7 @@ def test_ui_preferences_round_trip(tmp_path) -> None:
         chart_indicator="kdj",
         show_call_auction=False,
         quote_panel_collapsed=True,
+        overlay_sort_mode="change_percent",
     )
 
     store.save(preferences)

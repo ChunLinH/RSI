@@ -150,6 +150,7 @@ def main() -> None:
         timeout_seconds=config.market_request_timeout_seconds,
         max_retries=config.max_retries,
         retry_delay_seconds=config.retry_delay_seconds,
+        cache_directory=market_cache_directory,
     )
     security_searcher = TencentSecuritySearcher(
         timeout_seconds=min(config.market_request_timeout_seconds, 3),
@@ -163,6 +164,7 @@ def main() -> None:
             chart_indicator=config.chart_default_indicator,
             show_call_auction=config.chart_show_call_auction,
             quote_panel_collapsed=config.chart_quote_panel_collapsed,
+            overlay_sort_mode="rsi",
         )
     )
     application = QApplication(sys.argv)
@@ -188,6 +190,7 @@ def main() -> None:
         initial_chart_indicator=preferences.chart_indicator,
         initial_show_call_auction=preferences.show_call_auction,
         initial_quote_panel_collapsed=preferences.quote_panel_collapsed,
+        initial_overlay_sort_mode=preferences.overlay_sort_mode,
         preference_saver=preferences_store.save,
         chart_refresh_interval_seconds=config.chart_refresh_interval_seconds,
         market_breadth_fetcher=market_breadth_provider.fetch_all_a,

@@ -148,6 +148,13 @@ class MonitorEngine:
             raise MarketDataError("当前行情源不支持图表数据")
         return self._provider.fetch_chart_series(period, limit)
 
+    def fetch_chart_series_before(
+        self, period: str, before: datetime, limit: int
+    ) -> ChartSeries | None:
+        if not isinstance(self._provider, ChartMarketDataProvider):
+            return None
+        return self._provider.fetch_chart_series_before(period, before, limit)
+
     def _update_historical_prices(self, quote: MarketQuote) -> bool:
         if not self._history_initialized:
             if time.monotonic() < self._next_history_retry_at:

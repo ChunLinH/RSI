@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import datetime, time as clock_time
+from datetime import datetime, time as clock_time, timedelta
 import json
 import logging
 from math import isfinite
@@ -114,6 +114,22 @@ class TencentChinaMarketDataProvider(ChartMarketDataProvider):
         if self._cache is not None:
             self._cache.save_series(series)
         return self._attach_auction_history(series)
+
+    def fetch_chart_series_before(
+        self, period: str, before: datetime, limit: int
+    ) -> ChartSeries | None:
+        """加载日线或周线中指定 K 线之前的数据。"""
+        if period not in {"day", "week"}:
+            return None
+        if limit < 1:
+            raise ValueError("limit 必须大于 0")
+        end_date = before.date() - timedelta(days=1)
+        return self._retry(
+            lambda: self._fetch_long_kline_series(
+                period, limit, end_date, allow_empty=True
+            ),
+            f"{period} 历史 K 线",
+        )
 
     def _retry(self, operation: Callable[[], ResultT], description: str) -> ResultT:
         last_error: Exception | None = None
@@ -317,14 +333,28 @@ class TencentChinaMarketDataProvider(ChartMarketDataProvider):
         bars = tuple(self._parse_minute_kline_entry(entry) for entry in entries)
         return self._create_series(node, period, bars[-limit:])
 
-    def _fetch_long_kline_series(self, period: str, limit: int) -> ChartSeries:
-        parameters = {"param": f"{self._market_symbol},{period},,,{limit},qfq"}
+    def _fetch_long_kline_series(
+        self, period: str, limit: int, end_date=None, allow_empty: bool = False
+    ) -> ChartSeries | None:
+        end_text = "" if end_date is None else end_date.strftime("%Y-%m-%d")
+        parameters = {"param": f"{self._market_symbol},{period},,{end_text},{limit},qfq"}
         payload = self._request_json(f"{self._LONG_KLINE_URL}?{urlencode(parameters)}")
         node = self._payload_node(payload)
-        entries = node.get(f"qfq{period}", node.get(period))
+        adjusted_key = f"qfq{period}"
+        if adjusted_key in node:
+            entries = node[adjusted_key]
+        elif period in node:
+            entries = node[period]
+        else:
+            # A missing field means the response is malformed (or the
+            # endpoint temporarily failed).  It is not evidence that the
+            # requested date range has reached the beginning of history.
+            raise MarketDataError(f"{self._symbol} 未返回 {period} K 线")
         if not isinstance(entries, list):
             raise MarketDataError(f"{self._symbol} 未返回 {period} K 线")
         bars = tuple(self._parse_long_kline_entry(entry) for entry in entries)
+        if not bars and allow_empty:
+            return None
         return self._create_series(node, period, bars[-limit:])
 
     def _fetch_intraday_series(self) -> ChartSeries:

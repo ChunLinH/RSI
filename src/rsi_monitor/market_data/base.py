@@ -84,6 +84,12 @@ class ChartMarketDataProvider(HistoricalMarketDataProvider):
     def fetch_chart_series(self, period: str, limit: int) -> ChartSeries:
         """返回按时间升序排列的图表数据。"""
 
+    def fetch_chart_series_before(
+        self, period: str, before: datetime, limit: int
+    ) -> ChartSeries | None:
+        """按指定时间之前加载一段历史图表数据；不支持时返回空值。"""
+        return None
+
     def get_opening_auction_bars(self, trading_date) -> tuple[MarketBar, ...]:
         """返回当天已采集的集合竞价快照；不支持时返回空序列。"""
         return ()

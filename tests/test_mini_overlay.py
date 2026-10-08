@@ -1,8 +1,6 @@
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QCursor
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QLabel
-
 from rsi_monitor.ui.mini_overlay import MiniOverlay, MiniOverlayFooter, MiniOverlayRow
 
 
@@ -12,19 +10,19 @@ def test_overlay_shows_name_rsi_price_and_change_percent(qtbot) -> None:
 
     overlay.set_rows([MiniOverlayRow("159952", "创业板ETF广发", 58.13, 2.204, 1.75)])
 
-    assert [label.text() for label in overlay.findChildren(QLabel)] == [
+    assert [label.text() for label in overlay._row_labels[0]] == [
         "创业板ETF广发",
         "58.13",
         "2.204",
         "+1.75%",
     ]
-    labels = overlay.findChildren(QLabel)
+    labels = list(overlay._row_labels[0])
     assert all("font-size: 12px" in label.styleSheet() for label in labels)
     assert all("font-weight" not in label.styleSheet() for label in labels)
 
     overlay.set_rows([MiniOverlayRow("159952", "创业板ETF广发", 58.14, 2.205, 1.76)])
 
-    assert overlay.findChildren(QLabel) == labels
+    assert list(overlay._row_labels[0]) == labels
     assert overlay.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus
 
 
@@ -68,6 +66,22 @@ def test_entire_overlay_surface_can_be_dragged(qtbot) -> None:
     assert actual_distance.y() >= 20
 
 
+def test_overlay_has_no_panel_background_or_shadow(qtbot) -> None:
+    overlay = MiniOverlay(lambda: None, lambda: None, lambda: None)
+    qtbot.addWidget(overlay)
+    overlay.set_rows([MiniOverlayRow("159952", "创业板ETF广发", 58.13, 2.204, 1.75)])
+    overlay.show()
+    qtbot.waitExposed(overlay)
+
+    assert overlay.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    assert overlay.graphicsEffect() is None
+    image = overlay.grab().toImage()
+    # Windows 透明窗口保留极低 alpha 的命中层，空白处仍可拖动。
+    for point in (QPoint(2, 2), QPoint(overlay.width() // 2, 5), QPoint(2, overlay.height() // 2)):
+        assert image.pixelColor(point).alpha() <= 3
+    assert all("#e53935" in label.styleSheet() for label in overlay._row_labels[0])
+
+
 def test_clicking_a_row_reports_its_symbol(qtbot) -> None:
     clicked_symbols: list[str] = []
     overlay = MiniOverlay(
@@ -86,7 +100,7 @@ def test_clicking_a_row_reports_its_symbol(qtbot) -> None:
     overlay.show()
     qtbot.waitExposed(overlay)
     first_row_height = overlay._row_labels[0][0].height()
-    second_row_position = QPoint(20, 6 + first_row_height + 2 + first_row_height // 2)
+    second_row_position = overlay._row_labels[1][0].geometry().center()
 
     QTest.mouseClick(overlay._drag_surface, Qt.MouseButton.LeftButton, pos=second_row_position)
 
@@ -117,7 +131,7 @@ def test_overlay_shows_fixed_market_breadth_footer(qtbot) -> None:
     overlay.show()
     qtbot.waitExposed(overlay)
 
-    labels = overlay.findChildren(QLabel)
+    labels = [label for row in overlay._row_labels for label in row]
     assert [label.text() for label in labels[:7]] == [
         "创业板ETF广发",
         "58.13",
@@ -133,9 +147,9 @@ def test_overlay_shows_fixed_market_breadth_footer(qtbot) -> None:
     assert "较上日+2000亿" in footer_details.text()
     assert footer_details.width() >= footer_details.sizeHint().width()
     footer_name, up_count, down_count, _ = overlay._row_labels[-1]
-    assert "#b0b0b0" in footer_name.styleSheet()
-    assert "#e53935" in up_count.styleSheet()
-    assert "#31a24c" in down_count.styleSheet()
+    assert "#aeb8c5" in footer_name.styleSheet()
+    assert "#ff6b70" in up_count.styleSheet()
+    assert "#5dcc8a" in down_count.styleSheet()
 
     first_row_height = overlay._row_labels[0][0].height()
     footer_position = QPoint(20, 6 + first_row_height + 2 + first_row_height // 2)

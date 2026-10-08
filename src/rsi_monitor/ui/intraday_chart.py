@@ -70,6 +70,7 @@ class IntradayChartPanel(QWidget):
 
     period_step_requested = Signal(int)
     period_selected = Signal(str)
+    history_requested = Signal(str)
     indicator_changed = Signal(str)
     quote_panel_collapsed_changed = Signal(bool)
     refresh_requested = Signal()
@@ -97,6 +98,8 @@ class IntradayChartPanel(QWidget):
         self._pan_start_position: QPointF | None = None
         self._pan_start_range: tuple[int, int, int] | None = None
         self._is_panning = False
+        self._history_request_period: str | None = None
+        self._history_exhausted_periods: set[str] = set()
         self._period_tab_rects: dict[str, QRectF] = {}
         self._indicator_button_rects: dict[str, QRectF] = {}
         self._refresh_rect = QRectF()
@@ -155,16 +158,25 @@ class IntradayChartPanel(QWidget):
             self._focus_loss_timer.stop()
 
     def set_data(self, data: MarketChartData) -> None:
-        changed_chart = (
-            self._data is None
-            or self._data.symbol != data.symbol
-            or self._data.period != data.period
-        )
+        previous_data = self._data
+        symbol_changed = previous_data is None or previous_data.symbol != data.symbol
+        period_changed = previous_data is None or previous_data.period != data.period
+        changed_chart = symbol_changed or period_changed
         self._data = data
         if changed_chart:
+            if symbol_changed:
+                # A range belongs to one symbol; never show a new security at
+                # the old security's historical offset.
+                self._zoom_ranges.clear()
+            elif period_changed:
+                # Preserve ranges for other periods of the same symbol, but
+                # let the newly selected period start at its latest data.
+                self._zoom_ranges.pop(data.period, None)
             self._pan_start_position = None
             self._pan_start_range = None
             self._is_panning = False
+            self._history_request_period = None
+            self._history_exhausted_periods.clear()
         index = self._period_selector.findData(data.period)
         if index >= 0 and index != self._period_selector.currentIndex():
             self._period_selector.blockSignals(True)
@@ -172,6 +184,39 @@ class IntradayChartPanel(QWidget):
             self._period_selector.blockSignals(False)
         self._update_quote_panel_toggle()
         self.update()
+
+    def prepend_history(
+        self, period: str, added_count: int, exhausted: bool = False
+    ) -> None:
+        """将已加载的历史柱接到左侧，并保持拖动窗口的柱数。"""
+        stored = self._zoom_ranges.get(period)
+        if added_count > 0 and stored is not None:
+            start, end, total_bars = stored
+            visible_count = max(end - start, 1)
+            new_total = total_bars + added_count
+            new_start = 0 if start == 0 else start + added_count
+            new_start = max(0, min(new_start, new_total - visible_count))
+            self._zoom_ranges[period] = (
+                new_start,
+                new_start + min(visible_count, new_total),
+                new_total,
+            )
+        if self._history_request_period == period:
+            self._history_request_period = None
+        if exhausted:
+            self._history_exhausted_periods.add(period)
+        self._pan_start_position = None
+        self._pan_start_range = None
+        self._is_panning = False
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def history_request_finished(self, period: str, exhausted: bool = False) -> None:
+        """结束一次历史请求，即使数据源没有更多数据。"""
+        if self._history_request_period == period:
+            self._history_request_period = None
+        if exhausted:
+            self._history_exhausted_periods.add(period)
 
     @property
     def quote_panel_collapsed(self) -> bool:
@@ -1217,9 +1262,15 @@ class IntradayChartPanel(QWidget):
                 Qt.AlignmentFlag.AlignRight,
             ),
         }[len(indices)]
+        years = {bar.timestamp.year for bar in bars}
+        date_format = "%Y-%m" if len(years) > 1 else "%m-%d"
         for index, alignment in zip(indices, alignments):
             timestamp = bars[index].timestamp
-            label = timestamp.strftime("%H:%M") if len({bar.timestamp.date() for bar in bars}) == 1 else timestamp.strftime("%m-%d")
+            label = (
+                timestamp.strftime("%H:%M")
+                if len({bar.timestamp.date() for bar in bars}) == 1
+                else timestamp.strftime(date_format)
+            )
             x = x_positions[index]
             painter.drawText(QRectF(x - 40, chart.bottom() - 18, 80, 18), alignment, label)
 
@@ -1433,8 +1484,13 @@ class IntradayChartPanel(QWidget):
 
     def _visible_range(self, period: str, total_bars: int) -> tuple[int, int]:
         stored = self._zoom_ranges.get(period)
-        if stored is None:
-            return max(0, total_bars - min(total_bars, 180)), total_bars
+        if stored is None or stored[1] <= stored[0]:
+            start = max(0, total_bars - min(total_bars, 180))
+            # Keep the initial range in sync with the loaded page.  This is
+            # needed when an instrument has fewer than the default visible
+            # bars and an older page is loaded later.
+            self._zoom_ranges[period] = (start, total_bars, total_bars)
+            return start, total_bars
         start, end, stored_total = stored
         count = min(end - start, total_bars)
         if end >= stored_total:
@@ -1481,7 +1537,15 @@ class IntradayChartPanel(QWidget):
         chart_width: float,
     ) -> tuple[int, int]:
         count = end - start
-        if count <= 0 or count >= total_bars or chart_width <= 0:
+        if count <= 0 or chart_width <= 0:
+            return start, end
+        if count >= total_bars:
+            # A short first page can still have older history on the server.
+            # Keep the range pinned at the left edge so mouseMoveEvent can
+            # issue the same lazy-load request as it does for a partial page.
+            if period in {"day", "week"} and delta_pixels > 0:
+                self._zoom_ranges[period] = (0, total_bars, total_bars)
+                return 0, total_bars
             return start, end
         bar_width = self._bar_slot_width(chart_width, count)
         bar_shift = round(-delta_pixels / bar_width)
@@ -1667,7 +1731,10 @@ class IntradayChartPanel(QWidget):
         ):
             total_bars = len(self._data.series.bars)
             start, end = self._visible_range(self._data.period, total_bars)
-            if end - start < total_bars:
+            if (
+                end - start < total_bars
+                or self._data.period in {"day", "week"}
+            ):
                 self._pan_start_position = event.position()
                 self._pan_start_range = (start, end, total_bars)
                 self._is_panning = False
@@ -1686,7 +1753,7 @@ class IntradayChartPanel(QWidget):
                 self._is_panning = True
             if self._is_panning:
                 start, end, total_bars = self._pan_start_range
-                self._apply_pan_delta(
+                new_start, _ = self._apply_pan_delta(
                     self._data.period,
                     total_bars,
                     start,
@@ -1694,6 +1761,15 @@ class IntradayChartPanel(QWidget):
                     delta_pixels,
                     self._chart_rectangles()[0].width(),
                 )
+                if (
+                    self._data.period in {"day", "week"}
+                    and delta_pixels > 0
+                    and new_start == 0
+                    and self._history_request_period != self._data.period
+                    and self._data.period not in self._history_exhausted_periods
+                ):
+                    self._history_request_period = self._data.period
+                    self.history_requested.emit(self._data.period)
                 self._mouse_position = None
                 self.setCursor(Qt.CursorShape.ClosedHandCursor)
                 self.update()

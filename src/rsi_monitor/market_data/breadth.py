@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import date, datetime
 import json
+from pathlib import Path
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -13,9 +14,9 @@ from rsi_monitor.market_data.tencent_china import TencentChinaMarketDataProvider
 @dataclass(frozen=True)
 class MarketBreadth:
     name: str
-    up_count: int
-    down_count: int
-    flat_count: int
+    up_count: int | None
+    down_count: int | None
+    flat_count: int | None
     change_percent: float | None
     timestamp: datetime | None = None
     turnover_amount: float | None = None
@@ -31,34 +32,48 @@ class EastmoneyMarketBreadthProvider:
         "secids=47.800000,47.800004"
     )
     _FALLBACK_URL = _URL.replace("push2.eastmoney.com", "push2delay.eastmoney.com")
+    # The normal Eastmoney push hosts can be unavailable on some networks.
+    # The test host serves the same public payload and is kept as a last resort.
+    _TEST_URL = _URL.replace("push2.eastmoney.com", "push2test.eastmoney.com")
 
     def __init__(
         self,
         timeout_seconds: float,
         max_retries: int,
         retry_delay_seconds: float,
+        cache_directory: Path | None = None,
     ) -> None:
         self._timeout_seconds = timeout_seconds
         self._max_retries = max_retries
         self._retry_delay_seconds = retry_delay_seconds
         self._timezone = ZoneInfo("Asia/Shanghai")
+        comparison_timeout = min(timeout_seconds, 3.0)
         self._exchange_index_providers = tuple(
             TencentChinaMarketDataProvider(
                 symbol,
-                timeout_seconds,
-                max_retries,
-                retry_delay_seconds,
+                comparison_timeout,
+                1,
+                0,
             )
             for symbol in ("000001", "399001")
         )
         self._comparison_cache_key: tuple[date, int, int] | None = None
         self._comparison_cache_amount: float | None = None
+        self._breadth_cache_path = (
+            None
+            if cache_directory is None
+            else cache_directory / "market_breadth.json"
+        )
+        self._last_breadth = self._load_cached_breadth()
 
     def fetch_all_a(self) -> MarketBreadth:
         last_error: Exception | None = None
         for attempt in range(1, self._max_retries + 1):
             try:
-                return self._fetch_all_a_once()
+                breadth = self._fetch_all_a_once()
+                self._last_breadth = breadth
+                self._save_cached_breadth(breadth)
+                return breadth
             except (
                 HTTPError,
                 URLError,
@@ -71,23 +86,84 @@ class EastmoneyMarketBreadthProvider:
                 last_error = error
                 if attempt < self._max_retries:
                     time.sleep(self._retry_delay_seconds)
+        if self._last_breadth is not None:
+            return self._last_breadth
         raise MarketDataError(f"获取全 A 涨跌家数失败：{last_error}") from last_error
 
-    def _fetch_all_a_once(self) -> MarketBreadth:
+    def _load_cached_breadth(self) -> MarketBreadth | None:
+        if self._breadth_cache_path is None or not self._breadth_cache_path.exists():
+            return None
         try:
-            payload = self._request_json(self._URL, "全 A 涨跌家数")
-        except (
-            HTTPError,
-            URLError,
-            OSError,
-            TimeoutError,
-            UnicodeDecodeError,
-            json.JSONDecodeError,
-            MarketDataError,
+            payload = json.loads(self._breadth_cache_path.read_text(encoding="utf-8"))
+            timestamp = payload.get("timestamp")
+            return MarketBreadth(
+                name=str(payload.get("name") or "沪深京全A"),
+                up_count=self._optional_int(payload.get("up_count")),
+                down_count=self._optional_int(payload.get("down_count")),
+                flat_count=self._optional_int(payload.get("flat_count")),
+                change_percent=self._optional_float(payload.get("change_percent")),
+                timestamp=(
+                    None if timestamp is None else datetime.fromisoformat(str(timestamp))
+                ),
+                turnover_amount=self._optional_float(payload.get("turnover_amount")),
+                previous_same_time_amount=self._optional_float(
+                    payload.get("previous_same_time_amount")
+                ),
+            )
+        except (AttributeError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    def _save_cached_breadth(self, breadth: MarketBreadth) -> None:
+        if self._breadth_cache_path is None:
+            return
+        payload = {
+            "name": breadth.name,
+            "up_count": breadth.up_count,
+            "down_count": breadth.down_count,
+            "flat_count": breadth.flat_count,
+            "change_percent": breadth.change_percent,
+            "timestamp": None if breadth.timestamp is None else breadth.timestamp.isoformat(),
+            "turnover_amount": breadth.turnover_amount,
+            "previous_same_time_amount": breadth.previous_same_time_amount,
+        }
+        try:
+            self._breadth_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path = self._breadth_cache_path.with_suffix(".tmp")
+            temporary_path.write_text(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            temporary_path.replace(self._breadth_cache_path)
+        except OSError:
+            return
+
+    def _fetch_all_a_once(self) -> MarketBreadth:
+        last_error: Exception | None = None
+        for url, description in (
+            (self._URL, "全 A 涨跌家数"),
+            (self._FALLBACK_URL, "全 A 涨跌家数备用"),
+            (self._TEST_URL, "全 A 涨跌家数测试备用"),
         ):
-            payload = self._request_json(self._FALLBACK_URL, "全 A 涨跌家数备用")
-        if payload.get("rc") != 0:
-            raise MarketDataError(str(payload.get("rt") or "全 A 涨跌家数接口返回错误"))
+            try:
+                payload = self._request_json(url, description)
+                if payload.get("rc") != 0:
+                    raise MarketDataError(
+                        str(payload.get("rt") or "全 A 涨跌家数接口返回错误")
+                    )
+                return self._parse_breadth_payload(payload)
+            except (
+                HTTPError,
+                URLError,
+                OSError,
+                TimeoutError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                MarketDataError,
+            ) as error:
+                last_error = error
+        raise MarketDataError(str(last_error or "全 A 涨跌家数接口不可用")) from last_error
+
+    def _parse_breadth_payload(self, payload: dict) -> MarketBreadth:
         try:
             items = {
                 str(item["f12"]): item
@@ -135,28 +211,31 @@ class EastmoneyMarketBreadthProvider:
         if cache_key == self._comparison_cache_key:
             return self._comparison_cache_amount
         total = 0.0
-        for provider in self._exchange_index_providers:
-            series = provider.fetch_chart_series("five_day", 2_000)
-            previous_dates = sorted(
-                {
-                    bar.timestamp.date()
+        try:
+            for provider in self._exchange_index_providers:
+                series = provider.fetch_chart_series("five_day", 2_000)
+                previous_dates = sorted(
+                    {
+                        bar.timestamp.date()
+                        for bar in series.bars
+                        if bar.timestamp.date() < current_timestamp.date()
+                    }
+                )
+                if not previous_dates:
+                    return None
+                previous_date = previous_dates[-1]
+                amounts = [
+                    bar.amount
                     for bar in series.bars
-                    if bar.timestamp.date() < current_timestamp.date()
-                }
-            )
-            if not previous_dates:
-                return None
-            previous_date = previous_dates[-1]
-            amounts = [
-                bar.amount
-                for bar in series.bars
-                if bar.timestamp.date() == previous_date
-                and bar.timestamp.time() <= current_timestamp.time()
-                and bar.amount is not None
-            ]
-            if not amounts:
-                return None
-            total += sum(amounts)
+                    if bar.timestamp.date() == previous_date
+                    and bar.timestamp.time() <= current_timestamp.time()
+                    and bar.amount is not None
+                ]
+                if not amounts:
+                    return None
+                total += sum(amounts)
+        except (HTTPError, URLError, OSError, TimeoutError, MarketDataError):
+            return None
         self._comparison_cache_key = cache_key
         self._comparison_cache_amount = total
         return total
@@ -187,5 +266,12 @@ class EastmoneyMarketBreadthProvider:
     def _optional_float(value: object) -> float | None:
         try:
             return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _optional_int(value: object) -> int | None:
+        try:
+            return int(value)
         except (TypeError, ValueError):
             return None

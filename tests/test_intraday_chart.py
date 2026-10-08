@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 import pytest
@@ -86,6 +87,33 @@ def test_market_chart_accepts_live_data_and_renders(qtbot) -> None:
     assert "#c2a459" in rendered_colors
     assert "#e53935" in rendered_colors
     assert "#269a49" in rendered_colors
+
+
+def test_set_data_does_not_reuse_zoom_offset_for_another_chart(qtbot) -> None:
+    panel = IntradayChartPanel("rsi", quote_panel_collapsed=True)
+    qtbot.addWidget(panel)
+
+    panel.set_data(create_chart_data("day"))
+    panel._zoom_ranges.update(
+        {
+            "day": (0, 20, 200),
+            "week": (40, 60, 200),
+        }
+    )
+
+    # A data refresh for the same chart must keep the user's current offset.
+    panel.set_data(create_chart_data("day"))
+    assert panel._zoom_ranges["day"] == (0, 20, 200)
+
+    # Switching period keeps unrelated same-symbol ranges but starts the new
+    # period from its latest page.
+    panel.set_data(create_chart_data("week"))
+    assert "day" in panel._zoom_ranges
+    assert "week" not in panel._zoom_ranges
+
+    # Switching symbol must discard every old offset.
+    panel.set_data(replace(create_chart_data("day"), symbol="600000"))
+    assert panel._zoom_ranges == {}
 
 
 def test_open_series_never_inherits_a_solid_fill_brush() -> None:
@@ -687,6 +715,62 @@ def test_zoomed_kline_can_be_dragged_horizontally(qtbot) -> None:
     assert panel._pan_start_position is None
     assert panel.cursor().shape() == Qt.CursorShape.ArrowCursor
     assert selected_periods == []
+
+
+def test_kline_pan_requests_more_history_at_left_edge(qtbot) -> None:
+    panel = IntradayChartPanel("rsi", quote_panel_collapsed=True)
+    qtbot.addWidget(panel)
+    bars = tuple(
+        MarketBar(
+            datetime(2026, 1, 1) + timedelta(days=index),
+            10,
+            11,
+            9,
+            10,
+            100,
+        )
+        for index in range(240)
+    )
+    panel.set_data(
+        MarketChartData(
+            "159952",
+            "创业板ETF广发",
+            10,
+            50,
+            0,
+            bars[-1].timestamp,
+            "day",
+            ChartSeries("159952", "创业板ETF广发", "day", bars),
+        )
+    )
+    panel._zoom_ranges["day"] = (0, 60, len(bars))
+    requested: list[str] = []
+    panel.history_requested.connect(requested.append)
+    panel.show()
+    qtbot.waitExposed(panel)
+
+    chart = panel._chart_rectangles()[0]
+    start = chart.center().toPoint()
+    end = QPoint(start.x() + 120, start.y())
+    QTest.mousePress(panel, Qt.MouseButton.LeftButton, pos=start)
+    QTest.mouseMove(panel, end)
+    QTest.mouseRelease(panel, Qt.MouseButton.LeftButton, pos=end)
+
+    assert requested == ["day"]
+
+
+def test_short_kline_page_keeps_left_edge_available_for_history_loading() -> None:
+    panel = IntradayChartPanel("rsi", quote_panel_collapsed=True)
+
+    start, end = panel._visible_range("day", 100)
+    assert (start, end) == (0, 100)
+
+    new_start, new_end = panel._apply_pan_delta(
+        "day", 100, start, end, 120, 600
+    )
+
+    assert (new_start, new_end) == (0, 100)
+    assert panel._zoom_ranges["day"] == (0, 100, 100)
 
 
 def test_intraday_price_range_uses_exact_largest_downside_deviation() -> None:

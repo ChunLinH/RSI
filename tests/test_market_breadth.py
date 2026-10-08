@@ -147,3 +147,59 @@ def test_uses_fallback_endpoint_when_primary_is_unavailable(monkeypatch) -> None
     assert "push2delay.eastmoney.com" in requested_urls[1]
     assert breadth.down_count == 3300
     assert breadth.turnover_amount == 400_000_000_000
+
+
+def test_uses_test_endpoint_when_both_normal_endpoints_are_unavailable(monkeypatch) -> None:
+    requested_urls: list[str] = []
+
+    def fake_urlopen(request, timeout):
+        requested_urls.append(request.full_url)
+        if "push2test.eastmoney.com" not in request.full_url:
+            raise URLError("endpoint unavailable")
+        return FakeResponse(
+            '{"rc":0,"data":{"diff":[{"f3":0.1,"f6":500000000000,'
+            '"f12":"800000","f104":2400,"f105":2600,"f106":100,'
+            '"f124":1787105703},{"f3":0.2,"f6":510000000000,'
+            '"f12":"800004","f104":2500,"f105":2700,"f106":120,'
+            '"f124":1787105703}]}}'
+        )
+
+    monkeypatch.setattr("rsi_monitor.market_data.breadth.urlopen", fake_urlopen)
+    provider = EastmoneyMarketBreadthProvider(3, 1, 0)
+
+    breadth = provider.fetch_all_a()
+
+    assert "push2.eastmoney.com" in requested_urls[0]
+    assert "push2delay.eastmoney.com" in requested_urls[1]
+    assert "push2test.eastmoney.com" in requested_urls[2]
+    assert breadth.up_count == 2500
+    assert breadth.down_count == 2700
+
+
+def test_reuses_last_successful_breadth_when_all_endpoints_fail(monkeypatch, tmp_path) -> None:
+    responses = iter(
+        [
+            FakeResponse(
+                '{"rc":0,"data":{"diff":[{"f3":1.0,"f6":500,'
+                '"f12":"800000","f104":10,"f105":20,"f106":30,'
+                '"f124":1787105703},{"f3":1.0,"f6":600,'
+                '"f12":"800004","f104":11,"f105":21,"f106":31,'
+                '"f124":1787105703}]}}'
+            )
+        ]
+    )
+
+    def fake_urlopen(request, timeout):
+        try:
+            return next(responses)
+        except StopIteration as error:
+            raise URLError("all endpoints unavailable") from error
+
+    monkeypatch.setattr("rsi_monitor.market_data.breadth.urlopen", fake_urlopen)
+    provider = EastmoneyMarketBreadthProvider(3, 1, 0, cache_directory=tmp_path)
+
+    first = provider.fetch_all_a()
+    second = provider.fetch_all_a()
+
+    assert second == first
+    assert (tmp_path / "market_breadth.json").exists()

@@ -3,7 +3,7 @@ from threading import Event
 
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication
 
 from rsi_monitor.indicators.rsi import RsiCalculator
 from rsi_monitor.market_data.base import (
@@ -266,18 +266,23 @@ def test_window_shows_mini_overlay_when_minimized(qtbot) -> None:
 
     assert window.isHidden()
     assert window._mini_overlay.isVisible()
-    assert [label.text() for label in window._mini_overlay.findChildren(QLabel)] == [
+    labels = [label for row in window._mini_overlay._row_labels for label in row]
+    assert [label.text() for label in labels] == [
         "测试标的",
         "--",
         "100.000",
         "+1.75%",
+        "沪深京全A",
+        "涨--",
+        "跌--",
+        "平--  --  额--",
     ]
 
     first_row_height = window._mini_overlay._row_labels[0][0].height()
     QTest.mouseClick(
         window._mini_overlay,
         Qt.MouseButton.LeftButton,
-        pos=QPoint(20, 6 + first_row_height // 2),
+        pos=window._mini_overlay._row_labels[0][0].geometry().center(),
     )
     qtbot.waitUntil(
         lambda: window._intraday_chart._data is not None
@@ -340,7 +345,7 @@ def test_window_shows_mini_overlay_when_minimized(qtbot) -> None:
     assert window._mini_overlay.pos() == dragged_position
 
 
-def test_mini_overlay_sorts_rows_by_change_percent_descending(qtbot) -> None:
+def test_mini_overlay_sorts_rows_by_rsi_descending(qtbot) -> None:
     def create_test_engine(symbol: str, period: str, buy: float, sell: float) -> MonitorEngine:
         return MonitorEngine(
             provider=OneQuoteProvider(symbol),
@@ -367,16 +372,29 @@ def test_mini_overlay_sorts_rows_by_change_percent_descending(qtbot) -> None:
     window.add_monitor()
     window._sessions[0].name = "跌幅小"
     window._sessions[0].change_percent = -1.0
+    window._sessions[0].rsi = 82.0
     window._sessions[1].name = "涨幅大"
     window._sessions[1].change_percent = 2.1
+    window._sessions[1].rsi = 38.0
     window._sessions[2].name = "暂无涨跌"
     window._sessions[2].change_percent = None
+    window._sessions[2].rsi = 50.0
     window._market_breadth = MarketBreadth("沪深京全A", 500, 4650, 60, -2.23)
 
     window._update_mini_overlay()
 
-    labels = window._mini_overlay.findChildren(QLabel)
-    assert [labels[index].text() for index in (0, 4, 8, 12)] == [
+    row_labels = [row[0] for row in window._mini_overlay._row_labels]
+    assert [label.text() for label in row_labels] == [
+        "跌幅小",
+        "暂无涨跌",
+        "涨幅大",
+        "沪深京全A",
+    ]
+
+    window._mini_overlay._sort_actions["change_percent"].trigger()
+
+    assert window._overlay_sort_mode == "change_percent"
+    assert [label.text() for label in [row[0] for row in window._mini_overlay._row_labels]] == [
         "涨幅大",
         "跌幅小",
         "暂无涨跌",
@@ -552,6 +570,50 @@ def test_chart_worker_fetches_quote_and_series_for_the_display(qtbot) -> None:
     assert quote.price == 100.0
     assert chart_error is None
     assert quote_error is None
+
+
+def test_chart_history_merge_is_sorted_and_keeps_current_overlap() -> None:
+    timestamp = datetime(2025, 1, 1).astimezone()
+    current = ChartSeries(
+        "600839",
+        "测试标的",
+        "day",
+        (
+            MarketBar(timestamp.replace(day=2), 2, 2, 2, 20, 1),
+            MarketBar(timestamp.replace(day=3), 3, 3, 3, 30, 1),
+        ),
+        previous_close=19,
+    )
+    older = ChartSeries(
+        "600839",
+        "测试标的",
+        "day",
+        (
+            MarketBar(timestamp, 1, 1, 1, 10, 1),
+            MarketBar(timestamp.replace(day=2), 2, 2, 2, 99, 1),
+        ),
+        previous_close=9,
+    )
+
+    merged = MainWindow._prepend_chart_series(current, older)
+
+    assert [bar.timestamp.day for bar in merged.bars] == [1, 2, 3]
+    assert merged.bars[1].close == 20
+    assert merged.previous_close == 19
+
+    refreshed = MainWindow._merge_chart_series(
+        current,
+        ChartSeries(
+            "600839",
+            "测试标的",
+            "day",
+            (MarketBar(timestamp.replace(day=2), 2, 2, 2, 22, 1),),
+            previous_close=21,
+        ),
+        prefer_incoming=True,
+    )
+    assert refreshed.bars[0].close == 22
+    assert refreshed.previous_close == 21
 
 
 class BlockingQuoteProvider(MarketDataProvider):

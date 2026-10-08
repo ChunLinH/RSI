@@ -44,7 +44,13 @@ from rsi_monitor.market_data.security_search import SecuritySearchResult
 from rsi_monitor.monitoring.engine import MonitorEngine, MonitorSnapshot
 from rsi_monitor.monitoring.session_store import MonitorDefinition
 from rsi_monitor.notifications.base import NotificationResult
-from rsi_monitor.ui.mini_overlay import MiniOverlay, MiniOverlayFooter, MiniOverlayRow
+from rsi_monitor.ui.mini_overlay import (
+    SORT_MODE_CHANGE,
+    SORT_MODE_RSI,
+    MiniOverlay,
+    MiniOverlayFooter,
+    MiniOverlayRow,
+)
 from rsi_monitor.ui.intraday_chart import IntradayChartPanel, MarketChartData
 from rsi_monitor.ui.preferences import UiPreferences
 
@@ -99,24 +105,37 @@ class ChartUpdateWorker(QRunnable):
         session: MonitorSession,
         period: str,
         limit: int,
+        history_before: datetime | None = None,
     ) -> None:
         super().__init__()
         self._request_id = request_id
         self._session = session
         self._period = period
         self._limit = limit
+        self._history_before = history_before
         self.signals = ChartUpdateSignals()
 
     @Slot()
     def run(self) -> None:
-        try:
-            quote = self._session.engine.fetch_display_quote()
-            quote_error = None
-        except Exception as caught_error:
+        if self._history_before is not None:
             quote = None
-            quote_error = caught_error
+            quote_error = None
+        else:
+            try:
+                quote = self._session.engine.fetch_display_quote()
+                quote_error = None
+            except Exception as caught_error:
+                quote = None
+                quote_error = caught_error
         try:
-            series = self._session.engine.fetch_chart_series(self._period, self._limit)
+            if self._history_before is None:
+                series = self._session.engine.fetch_chart_series(
+                    self._period, self._limit
+                )
+            else:
+                series = self._session.engine.fetch_chart_series_before(
+                    self._period, self._history_before, self._limit
+                )
             chart_error = None
         except Exception as caught_error:
             series = None
@@ -174,6 +193,7 @@ class MainWindow(QMainWindow):
         initial_chart_indicator: str = "rsi",
         initial_show_call_auction: bool = True,
         initial_quote_panel_collapsed: bool = False,
+        initial_overlay_sort_mode: str = SORT_MODE_RSI,
         preference_saver: Callable[[UiPreferences], None] | None = None,
         chart_refresh_interval_seconds: float = 15,
         market_breadth_fetcher: Callable[[], MarketBreadth] | None = None,
@@ -205,12 +225,20 @@ class MainWindow(QMainWindow):
         self._preference_saver = preference_saver
         self._chart_data_limit = chart_data_limit
         self._chart_request_id = 0
-        self._active_chart_requests: set[tuple[str, str]] = set()
+        self._active_chart_requests: dict[tuple[str, str], int] = {}
+        self._chart_request_history_before: dict[int, datetime | None] = {}
+        self._chart_request_sessions: dict[int, MonitorSession] = {}
+        self._pending_chart_history_requests: set[tuple[str, str]] = set()
         self._chart_period_index = 0
         self._initial_chart_auto_hide = initial_chart_auto_hide
         self._initial_chart_indicator = initial_chart_indicator
         self._initial_show_call_auction = initial_show_call_auction
         self._initial_quote_panel_collapsed = initial_quote_panel_collapsed
+        self._overlay_sort_mode = (
+            initial_overlay_sort_mode
+            if initial_overlay_sort_mode in {SORT_MODE_RSI, SORT_MODE_CHANGE}
+            else SORT_MODE_RSI
+        )
         self._system_tray_available = system_tray_available or QSystemTrayIcon.isSystemTrayAvailable
         self._market_breadth_fetcher = market_breadth_fetcher
         self._market_breadth_refresh_interval_seconds = market_breadth_refresh_interval_seconds
@@ -231,7 +259,9 @@ class MainWindow(QMainWindow):
             self._hide_mini_overlay,
             self.quit_application,
             self._toggle_intraday_chart,
+            sort_mode=self._overlay_sort_mode,
         )
+        self._mini_overlay.sort_mode_changed.connect(self._set_overlay_sort_mode)
         self._intraday_chart = IntradayChartPanel(
             initial_chart_indicator,
             quote_panel_collapsed=initial_quote_panel_collapsed,
@@ -239,6 +269,7 @@ class MainWindow(QMainWindow):
         self._intraday_chart.set_auto_hide_on_focus_loss(initial_chart_auto_hide)
         self._intraday_chart.period_step_requested.connect(self._change_chart_period)
         self._intraday_chart.period_selected.connect(self._select_chart_period)
+        self._intraday_chart.history_requested.connect(self._request_chart_history)
         self._intraday_chart.refresh_requested.connect(
             self._request_current_chart_series
         )
@@ -361,6 +392,10 @@ class MainWindow(QMainWindow):
             self._mini_overlay.hide()
             self._intraday_chart.hide()
             self._chart_thread_pool.clear()
+            self._active_chart_requests.clear()
+            self._chart_request_history_before.clear()
+            self._chart_request_sessions.clear()
+            self._pending_chart_history_requests.clear()
             if self._tray_icon is not None:
                 self._tray_icon.hide()
             event.accept()
@@ -389,6 +424,10 @@ class MainWindow(QMainWindow):
         self._chart_refresh_timer.stop()
         self._thread_pool.clear()
         self._chart_thread_pool.clear()
+        self._active_chart_requests.clear()
+        self._chart_request_history_before.clear()
+        self._chart_request_sessions.clear()
+        self._pending_chart_history_requests.clear()
         self._mini_overlay.hide()
         self._intraday_chart.hide()
         if self._tray_icon is not None:
@@ -693,29 +732,35 @@ class MainWindow(QMainWindow):
         self.hide()
 
     def _update_mini_overlay(self) -> None:
+        sort_field = (
+            "change_percent"
+            if self._overlay_sort_mode == SORT_MODE_CHANGE
+            else "rsi"
+        )
         sessions = sorted(
             self._sessions,
             key=lambda session: (
-                session.change_percent
-                if session.change_percent is not None
+                getattr(session, sort_field)
+                if getattr(session, sort_field) is not None
                 else float("-inf")
             ),
             reverse=True,
         )
-        footer = (
-            MiniOverlayFooter(
-                name=self._market_breadth.name,
-                up_count=self._market_breadth.up_count,
-                down_count=self._market_breadth.down_count,
-                flat_count=self._market_breadth.flat_count,
-                change_percent=self._market_breadth.change_percent,
-                turnover_amount=self._market_breadth.turnover_amount,
-                previous_same_time_amount=(
-                    self._market_breadth.previous_same_time_amount
-                ),
-            )
-            if self._market_breadth is not None
-            else None
+        breadth = self._market_breadth or MarketBreadth(
+            name="沪深京全A",
+            up_count=None,
+            down_count=None,
+            flat_count=None,
+            change_percent=None,
+        )
+        footer = MiniOverlayFooter(
+            name=breadth.name,
+            up_count=breadth.up_count,
+            down_count=breadth.down_count,
+            flat_count=breadth.flat_count,
+            change_percent=breadth.change_percent,
+            turnover_amount=breadth.turnover_amount,
+            previous_same_time_amount=breadth.previous_same_time_amount,
         )
         self._mini_overlay.set_rows(
             [
@@ -730,6 +775,13 @@ class MainWindow(QMainWindow):
             ],
             footer,
         )
+
+    def _set_overlay_sort_mode(self, mode: str) -> None:
+        if mode not in {SORT_MODE_RSI, SORT_MODE_CHANGE}:
+            return
+        self._overlay_sort_mode = mode
+        self._update_mini_overlay()
+        self._save_ui_preferences()
 
     def _toggle_intraday_chart(self, symbol: str) -> None:
         self._intraday_chart.cancel_pending_outside_click_hide()
@@ -811,6 +863,7 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _change_chart_period(self, step: int) -> None:
+        self._pending_chart_history_requests.clear()
         self._chart_period_index = (self._chart_period_index + step) % len(CHART_PERIODS)
         self._update_intraday_chart()
         self._request_current_chart_series()
@@ -818,6 +871,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _select_chart_period(self, period: str) -> None:
+        self._pending_chart_history_requests.clear()
         try:
             self._chart_period_index = CHART_PERIODS.index(period)
         except ValueError:
@@ -844,14 +898,57 @@ class MainWindow(QMainWindow):
         if request_key in self._active_chart_requests:
             return
         self._chart_request_id += 1
+        request_id = self._chart_request_id
+        self._chart_request_history_before[request_id] = None
+        self._chart_request_sessions[request_id] = session
         worker = ChartUpdateWorker(
-            self._chart_request_id,
+            request_id,
             session,
             period,
             self._chart_data_limit,
         )
         worker.signals.finished.connect(self._finish_chart_update)
-        self._active_chart_requests.add(request_key)
+        self._active_chart_requests[request_key] = request_id
+        self._update_intraday_chart()
+        self._chart_thread_pool.start(worker)
+
+    @Slot(str)
+    def _request_chart_history(self, period: str) -> None:
+        if (
+            period not in {"day", "week"}
+            or self._chart_symbol is None
+            or period != self._current_chart_period
+        ):
+            self._intraday_chart.history_request_finished(period)
+            return
+        session = next(
+            (item for item in self._sessions if item.symbol == self._chart_symbol),
+            None,
+        )
+        if session is None:
+            self._intraday_chart.history_request_finished(period)
+            return
+        series = session.chart_series.get(period)
+        if series is None or not series.bars:
+            self._intraday_chart.history_request_finished(period)
+            return
+        request_key = (session.symbol, period)
+        if request_key in self._active_chart_requests:
+            self._pending_chart_history_requests.add(request_key)
+            return
+        self._chart_request_id += 1
+        request_id = self._chart_request_id
+        self._chart_request_history_before[request_id] = series.bars[0].timestamp
+        self._chart_request_sessions[request_id] = session
+        worker = ChartUpdateWorker(
+            request_id,
+            session,
+            period,
+            self._chart_data_limit,
+            history_before=series.bars[0].timestamp,
+        )
+        worker.signals.finished.connect(self._finish_chart_update)
+        self._active_chart_requests[request_key] = request_id
         self._update_intraday_chart()
         self._chart_thread_pool.start(worker)
 
@@ -866,8 +963,23 @@ class MainWindow(QMainWindow):
         chart_error: Exception | None,
         quote_error: Exception | None,
     ) -> None:
-        self._active_chart_requests.discard((symbol, period))
+        history_before = self._chart_request_history_before.pop(request_id, None)
+        expected_session = self._chart_request_sessions.pop(request_id, None)
+        loading_history = history_before is not None
+        request_key = (symbol, period)
+        active_request_id = self._active_chart_requests.get(request_key)
+        if active_request_id is not None and active_request_id != request_id:
+            return
+        self._active_chart_requests.pop(request_key, None)
+        history_pending = request_key in self._pending_chart_history_requests
+        self._pending_chart_history_requests.discard(request_key)
         session = next((item for item in self._sessions if item.symbol == symbol), None)
+        if expected_session is not None and session is not expected_session:
+            if loading_history:
+                self._intraday_chart.history_request_finished(period)
+            if self._chart_symbol == symbol and session is not None:
+                QTimer.singleShot(0, self._request_current_chart_series)
+            return
         if session is None:
             return
         previous_quote = session.quote
@@ -881,19 +993,59 @@ class MainWindow(QMainWindow):
             self._update_mini_overlay()
         elif quote_error is not None:
             self._logger.warning("%s 行情概览加载失败：%s", symbol, quote_error)
+        history_previous_count: int | None = None
         if series is not None:
-            session.chart_series[period] = (
-                apply_live_quote(series, quote, previous_quote)
-                if quote is not None
-                else series
-            )
+            if loading_history:
+                previous_series = session.chart_series.get(period)
+                history_previous_count = (
+                    len(previous_series.bars) if previous_series is not None else 0
+                )
+                merged_series = self._prepend_chart_series(previous_series, series)
+                session.chart_series[period] = merged_series
+            else:
+                refreshed_series = (
+                    apply_live_quote(series, quote, previous_quote)
+                    if quote is not None
+                    else series
+                )
+                previous_series = session.chart_series.get(period)
+                if previous_series is not None and period in {"day", "week"}:
+                    merged_series = self._merge_chart_series(
+                        previous_series, refreshed_series, prefer_incoming=True
+                    )
+                    session.chart_series[period] = replace(
+                        merged_series,
+                        previous_close=(
+                            previous_series.previous_close
+                            if previous_series.previous_close is not None
+                            else refreshed_series.previous_close
+                        ),
+                    )
+                else:
+                    session.chart_series[period] = refreshed_series
             if not session.name:
                 session.name = series.name
                 self._update_mini_overlay()
         elif chart_error is not None:
             self._logger.warning("%s %s 图表加载失败：%s", symbol, period, chart_error)
         if self._chart_symbol != symbol or self._current_chart_period != period:
+            if loading_history:
+                self._intraday_chart.history_request_finished(period)
             return
+        if loading_history:
+            if series is not None:
+                # 合并后的长度减去合并前长度才是实际新增的历史柱数。
+                current_count = len(session.chart_series[period].bars)
+                previous_count = history_previous_count or 0
+                # 只把实际新增的柱数交给图表，避免接口重叠数据改变缩放窗口。
+                added_count = max(current_count - previous_count, 0)
+                self._intraday_chart.prepend_history(
+                    period, added_count, exhausted=added_count == 0
+                )
+            else:
+                self._intraday_chart.history_request_finished(
+                    period, exhausted=chart_error is None
+                )
         if chart_error is not None and period not in session.chart_series:
             self._intraday_chart.set_data(
                 MarketChartData(
@@ -912,6 +1064,61 @@ class MainWindow(QMainWindow):
             )
             return
         self._update_intraday_chart()
+        if history_pending and not loading_history:
+            if self._intraday_chart.isVisible():
+                QTimer.singleShot(0, lambda: self._request_chart_history(period))
+            else:
+                self._intraday_chart.history_request_finished(period)
+
+    @staticmethod
+    def _prepend_chart_series(
+        current: ChartSeries | None, older: ChartSeries
+    ) -> ChartSeries:
+        return MainWindow._merge_chart_series(current, older, prefer_incoming=False)
+
+    @staticmethod
+    def _merge_chart_series(
+        current: ChartSeries | None,
+        incoming: ChartSeries,
+        prefer_incoming: bool,
+    ) -> ChartSeries:
+        if current is None:
+            return incoming
+        bars_by_timestamp = {bar.timestamp: bar for bar in current.bars}
+        if prefer_incoming:
+            bars_by_timestamp.update({bar.timestamp: bar for bar in incoming.bars})
+        else:
+            bars_by_timestamp.update(
+                {
+                    bar.timestamp: bar
+                    for bar in incoming.bars
+                    if bar.timestamp not in bars_by_timestamp
+                }
+            )
+        bars = tuple(
+            bars_by_timestamp[timestamp]
+            for timestamp in sorted(bars_by_timestamp)
+        )
+        return replace(
+            current,
+            bars=bars,
+            # Older pages must not replace the latest page's reference close;
+            # doing so distorts the scale when the user drags back to today.
+            previous_close=(
+                (
+                    incoming.previous_close
+                    if prefer_incoming and incoming.previous_close is not None
+                    else current.previous_close
+                    if current.previous_close is not None
+                    else incoming.previous_close
+                )
+            ),
+            is_stale=(
+                incoming.is_stale
+                if prefer_incoming
+                else current.is_stale or incoming.is_stale
+            ),
+        )
 
     @staticmethod
     def _merge_display_quote(
@@ -978,6 +1185,7 @@ class MainWindow(QMainWindow):
                     chart_indicator=self._intraday_chart.indicator,
                     show_call_auction=self._show_call_auction_checkbox.isChecked(),
                     quote_panel_collapsed=self._intraday_chart.quote_panel_collapsed,
+                    overlay_sort_mode=self._overlay_sort_mode,
                 )
             )
         except OSError as error:

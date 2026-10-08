@@ -26,7 +26,14 @@ Remove-Item -Recurse -Force $stagingRoot, $buildRoot -ErrorAction SilentlyContin
 $buildPathEntries = @(
     $env:PATH -split [IO.Path]::PathSeparator | Where-Object {
         $entry = $_.Trim()
-        $entry -and -not (Test-Path (Join-Path $entry "icudt78.dll"))
+        if (-not $entry -or $entry.Contains('%')) {
+            return $false
+        }
+        try {
+            -not (Test-Path (Join-Path $entry "icudt78.dll"))
+        } catch [ArgumentException] {
+            return $false
+        }
     }
 )
 $originalPath = $env:PATH
