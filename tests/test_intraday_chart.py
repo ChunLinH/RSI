@@ -591,6 +591,8 @@ def test_intraday_quote_panel_uses_right_cards() -> None:
         name="创业板ETF广发",
         change_percent=1.75,
         previous_close=2.166,
+        total_market_cap=120.75,
+        pe_ratio=12.30,
         bid_levels=((2.203, 100),),
         ask_levels=((2.205, 200),),
     )
@@ -607,6 +609,23 @@ def test_intraday_quote_panel_uses_right_cards() -> None:
     assert panel._order_book_rect().left() == 728
     assert panel._percent(0.3) == "+0.30%"
     assert panel._shares(1222.89, 79.74) == "15.34亿"
+    assert panel._market_cap(120.75) == "120.75亿"
+    assert panel._number(12.30) == "12.30"
+    assert panel._order_amount(46.52, 54) == pytest.approx(251_208.0)
+    assert panel._amount(panel._order_amount(46.52, 54)) == "25.12万"
+    assert panel._amount(panel._order_amount(46.48, 41_400)) == "1.92亿"
+
+    overview_rows: list[tuple[str, str, str, str]] = []
+    panel._draw_overview_row = lambda _painter, _panel, _y, left_label, left_value, right_label, right_value: overview_rows.append(
+        (left_label, left_value, right_label, right_value)
+    )
+    image = QImage(panel.size(), QImage.Format.Format_ARGB32)
+    image.fill(0)
+    painter = QPainter(image)
+    panel._draw_quote_panel(painter, panel._data, QRectF(), QRectF())
+    painter.end()
+
+    assert overview_rows[-1] == ("市值", "120.75亿", "PE", "12.30")
 
 
 def test_zoomed_kline_keeps_ma5_and_ma60_from_full_history(qtbot) -> None:

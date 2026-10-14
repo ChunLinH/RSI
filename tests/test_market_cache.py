@@ -16,6 +16,8 @@ def test_market_cache_round_trips_quote_and_chart_series(tmp_path) -> None:
         cumulative_volume=1_000,
         cumulative_amount=219_900,
         previous_close=2.166,
+        total_market_cap=120.75,
+        pe_ratio=12.30,
         bid_levels=((2.198, 100),),
         ask_levels=((2.200, 200),),
     )
@@ -41,6 +43,8 @@ def test_market_cache_round_trips_quote_and_chart_series(tmp_path) -> None:
     assert cached_quote.cumulative_volume == 1_000
     assert cached_quote.cumulative_amount == 219_900
     assert cached_quote.previous_close == 2.166
+    assert cached_quote.total_market_cap == 120.75
+    assert cached_quote.pe_ratio == 12.30
     assert cached_quote.bid_levels == ((2.198, 100),)
     assert cached_quote.ask_levels == ((2.200, 200),)
     assert cached_series is not None

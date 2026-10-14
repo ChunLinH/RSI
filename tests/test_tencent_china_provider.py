@@ -104,6 +104,8 @@ def test_quote_payload_exposes_auction_volume_and_amount(monkeypatch) -> None:
     assert quote.price_change == 0.008
     assert quote.turnover_rate == 1.25
     assert quote.amplitude == 0.93
+    assert quote.total_market_cap == 120.75
+    assert quote.pe_ratio == 12.30
     assert quote.average_price == 2.160
     assert quote.bid_levels[0] == (2.165, 11)
     assert quote.ask_levels[-1] == (2.171, 56)

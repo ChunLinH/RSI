@@ -503,15 +503,15 @@ class IntradayChartPanel(QWidget):
             self._MAIN_CARD_WIDTH + 8,
             0.5,
             self.width() - self._MAIN_CARD_WIDTH - 8.5,
-            206,
+            240,
         )
 
     def _order_book_rect(self) -> QRectF:
         return QRectF(
             self._MAIN_CARD_WIDTH + 8,
-            214,
+            248,
             self.width() - self._MAIN_CARD_WIDTH - 8.5,
-            self.height() - 214.5,
+            self.height() - 248.5,
         )
 
     def _update_quote_panel_toggle(self) -> None:
@@ -546,6 +546,16 @@ class IntradayChartPanel(QWidget):
         )
         painter.drawText(overview.left() + 12, overview.top() + 29, overview_title)
         painter.drawText(order_book.left() + 12, order_book.top() + 29, "五档买卖")
+        column_font = painter.font()
+        column_font.setPointSizeF(max(8.0, title_font.pointSizeF() - 2))
+        column_font.setBold(False)
+        painter.setFont(column_font)
+        painter.setPen(QColor("#777e86"))
+        painter.drawText(
+            QRectF(order_book.right() - 92, order_book.top() + 12, 80, 24),
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            "金额",
+        )
         painter.setPen(QPen(QColor("#e3e6ea"), 1))
         painter.drawLine(
             QPointF(overview.left() + 1, overview.top() + 48),
@@ -568,6 +578,7 @@ class IntradayChartPanel(QWidget):
             ("最高", self._price(quote.high_price), "最低", self._price(quote.low_price)),
             ("成交量", self._hands(quote.cumulative_volume), "成交额", self._amount(quote.cumulative_amount)),
             ("换手率", self._percent(quote.turnover_rate), "振幅", self._percent(quote.amplitude)),
+            ("市值", self._market_cap(quote.total_market_cap), "PE", self._number(quote.pe_ratio)),
         )
         row_y = overview.top() + 71
         for left_label, left_value, right_label, right_value in rows:
@@ -589,7 +600,9 @@ class IntradayChartPanel(QWidget):
             painter.setPen(QColor("#979da5"))
             painter.drawText(order_book, Qt.AlignmentFlag.AlignCenter, "暂无五档行情")
             return
-        maximum_volume = max(volume for _, (_, volume) in levels)
+        maximum_amount = max(
+            self._order_amount(price, volume) for _, (price, volume) in levels
+        )
         row_height = 25.5
         row_y = order_book.top() + 67
         for side, side_levels in (("卖", asks), ("买", bids)):
@@ -602,7 +615,7 @@ class IntradayChartPanel(QWidget):
                     level,
                     price,
                     volume,
-                    maximum_volume,
+                    maximum_amount,
                 )
                 row_y += row_height
 
@@ -646,7 +659,7 @@ class IntradayChartPanel(QWidget):
         level: int,
         price: float,
         volume: float,
-        maximum_volume: float,
+        maximum_amount: float,
     ) -> None:
         color = QColor("#b4525d") if side == "卖" else QColor("#2e8b69")
         bar_color = QColor("#f3c5ca") if side == "卖" else QColor("#bfe6d6")
@@ -654,15 +667,16 @@ class IntradayChartPanel(QWidget):
         painter.drawText(panel.left() + 12, row_y, f"{side}{self._level_name(level)}")
         painter.setPen(color)
         painter.drawText(panel.left() + 66, row_y, f"{price:.3f}")
-        bar_width = 54 * volume / maximum_volume if maximum_volume > 0 else 0
+        amount = self._order_amount(price, volume)
+        bar_width = 54 * amount / maximum_amount if maximum_amount > 0 else 0
         painter.fillRect(
             QRectF(panel.left() + 120, row_y - 15, bar_width, 18), bar_color
         )
         painter.setPen(QColor("#30353b"))
         painter.drawText(
-            QRectF(panel.right() - 58, row_y - 15, 46, 18),
+            QRectF(panel.right() - 92, row_y - 15, 80, 18),
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-            self._hands(volume),
+            self._amount(amount),
         )
 
     @staticmethod
@@ -700,6 +714,11 @@ class IntradayChartPanel(QWidget):
         if abs(value) >= 10_000:
             return f"{value / 10_000:.2f}万"
         return f"{value:.0f}"
+
+    @staticmethod
+    def _order_amount(price: float, volume: float) -> float:
+        """将盘口手数换算为委托金额；A 股/ETF 每手按 100 份计算。"""
+        return price * volume * 100
 
     @staticmethod
     def _market_cap(value: float | None) -> str:
