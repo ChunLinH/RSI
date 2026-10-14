@@ -524,7 +524,7 @@ def test_non_intraday_zoom_changes_visible_bar_count() -> None:
     assert zoomed_out == 180
 
 
-def test_zoomed_kline_uses_compact_right_aligned_slots() -> None:
+def test_zoomed_kline_fills_chart_width() -> None:
     panel = IntradayChartPanel()
     chart = QRectF(48, 0, 656, 300)
     bars = tuple(
@@ -536,15 +536,86 @@ def test_zoomed_kline_uses_compact_right_aligned_slots() -> None:
     slot = panel._bar_slot_width(chart.width(), len(bars))
     body_width = panel._bar_body_width(chart, positions, len(bars))
 
-    assert slot == panel._BAR_SLOT_MAX
+    assert slot == pytest.approx(chart.width() / len(bars))
     assert positions[-1] == pytest.approx(chart.right() - slot / 2)
-    assert positions[0] == pytest.approx(chart.right() - slot * (len(bars) - 0.5))
+    assert positions[0] == pytest.approx(chart.left() + slot / 2)
     assert all(
         right - left == pytest.approx(slot)
         for left, right in zip(positions, positions[1:])
     )
     assert body_width == pytest.approx(panel._BAR_BODY_MAX)
     assert body_width > 8
+
+
+def test_historical_kline_range_ignores_latest_previous_close() -> None:
+    bars = tuple(
+        MarketBar(
+            datetime(2026, 1, 1) + timedelta(days=index),
+            10,
+            11,
+            9,
+            10,
+            1,
+        )
+        for index in range(4)
+    )
+    series = ChartSeries("TEST", "测试", "day", bars, previous_close=100)
+
+    minimum, maximum = IntradayChartPanel._price_range(
+        bars[:2], series, all_bars=bars, visible_start=0
+    )
+
+    assert minimum < 9
+    assert maximum < 20
+
+
+def test_historical_kline_range_does_not_follow_outlier_long_ma() -> None:
+    """A historical window with a low long MA must keep candles readable.
+
+    The moving averages are calculated from the full loaded history so that
+    their warm-up values remain continuous while the user pans.  A long MA
+    that still reflects an older price regime must not stretch the price
+    axis until the currently visible candles collapse into a thin strip.
+    """
+    bars: list[MarketBar] = []
+    for index in range(140):
+        price = 1.27 + index * 0.0001
+        bars.append(
+            MarketBar(
+                datetime(2025, 1, 1) + timedelta(days=index),
+                price,
+                price + 0.005,
+                price - 0.005,
+                price,
+                100,
+            )
+        )
+    for index in range(60):
+        price = 1.75 + index * 0.0001
+        bars.append(
+            MarketBar(
+                datetime(2025, 1, 1) + timedelta(days=140 + index),
+                price,
+                price + 0.005,
+                price - 0.005,
+                price,
+                100,
+            )
+        )
+
+    all_bars = tuple(bars)
+    visible_bars = all_bars[140:]
+    series = ChartSeries("TEST", "测试", "day", all_bars, previous_close=1.75)
+
+    minimum, maximum = IntradayChartPanel._price_range(
+        visible_bars,
+        series,
+        all_bars=all_bars,
+        visible_start=140,
+    )
+
+    assert minimum > 1.70
+    assert maximum < 1.81
 
 
 def test_normal_kline_count_still_fills_chart_width() -> None:
@@ -558,7 +629,7 @@ def test_normal_kline_count_still_fills_chart_width() -> None:
     positions = panel._bar_x_positions(chart, bars, "day")
     slot = panel._bar_slot_width(chart.width(), len(bars))
 
-    assert slot < panel._BAR_SLOT_MAX
+    assert slot == pytest.approx(chart.width() / len(bars))
     assert positions[0] == pytest.approx(chart.left() + slot / 2)
     assert positions[-1] == pytest.approx(chart.right() - slot / 2)
 

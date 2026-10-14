@@ -21,6 +21,10 @@ $pySideDirectory = (py -3 -c "import pathlib, PySide6; print(pathlib.Path(PySide
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $pySideDirectory)) {
     throw "无法定位 PySide6 运行库目录。"
 }
+$icuLibrary = Join-Path $env:WINDIR "System32\icuuc.dll"
+if (-not (Test-Path $icuLibrary)) {
+    throw "无法定位 Qt 所需的 ICU 运行库：$icuLibrary"
+}
 
 Remove-Item -Recurse -Force $stagingRoot, $buildRoot -ErrorAction SilentlyContinue
 $buildPathEntries = @(
@@ -44,6 +48,7 @@ try {
         --add-data "$projectRoot\config\settings.example.ini;config" `
         --add-binary "$pySideDirectory\concrt140.dll;PySide6" `
         --add-binary "$pySideDirectory\msvcp140_codecvt_ids.dll;PySide6" `
+        --add-binary "$icuLibrary;PySide6" `
         src\rsi_monitor\__main__.py
     $pyInstallerExitCode = $LASTEXITCODE
 } finally {

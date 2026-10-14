@@ -55,9 +55,7 @@ class IntradayChartPanel(QWidget):
     _EXPANDED_WIDTH = 960
     _COMPACT_WIDTH = 720
     _WINDOW_HEIGHT = 560
-    # K 线缩放遵循固定 bar spacing：数据少时保持紧凑，数据多时仍可铺满图框。
-    _BAR_SLOT_MIN = 2.5
-    _BAR_SLOT_MAX = 18.0
+    # K 线缩放始终按当前可视柱数铺满图框。
     _BAR_BODY_RATIO = 0.8
     _BAR_BODY_MAX = 14.0
     _QUICK_PERIODS = (
@@ -1325,15 +1323,35 @@ class IntradayChartPanel(QWidget):
         maximum = max(bar.high for bar in bars)
         if series.period in {"day", "week", "month"} and all_bars:
             closes = tuple(bar.close for bar in all_bars)
+            # 长周期均线可能仍在更早的价格区间。让离当前可视 K 线过远的
+            # 均线被裁在绘图区外，避免它把蜡烛压缩成底部的一小段。
+            base_minimum = minimum
+            base_maximum = maximum
+            ma_margin = max(
+                (base_maximum - base_minimum) * 0.2,
+                abs(base_maximum) * 0.01,
+            )
             for period in (5, 10, 20, 60):
                 values = cls._visible_moving_average_values(
                     closes, period, visible_start, len(bars)
                 )
                 visible_values = tuple(value for value in values if value is not None)
                 if visible_values:
-                    minimum = min(minimum, *visible_values)
-                    maximum = max(maximum, *visible_values)
-        if series.previous_close is not None:
+                    nearby_values = tuple(
+                        value
+                        for value in visible_values
+                        if base_minimum - ma_margin <= value <= base_maximum + ma_margin
+                    )
+                    if nearby_values:
+                        minimum = min(minimum, *nearby_values)
+                        maximum = max(maximum, *nearby_values)
+        # 日/周/月的 previous_close 来自最新行情。拖到历史窗口后，不能把
+        # 当前昨收混进旧日期的价格范围，否则会把历史 K 线压缩到图框的一角。
+        # 只有可视窗口触及最新一根柱时，昨收才是当前图表的有效参考线。
+        is_latest_window = (
+            all_bars is None or visible_start + len(bars) >= len(all_bars)
+        )
+        if series.previous_close is not None and is_latest_window:
             minimum = min(minimum, series.previous_close)
             maximum = max(maximum, series.previous_close)
         padding = max((maximum - minimum) * 0.08, maximum * 0.001)
@@ -1393,11 +1411,10 @@ class IntradayChartPanel(QWidget):
     def _bar_slot_width(cls, chart_width: float, bar_count: int) -> float:
         if chart_width <= 0 or bar_count <= 0:
             return 0.0
-        natural_slot = chart_width / bar_count
-        # 数据量极大时不能为了满足最小槽位而把首根柱推到图框外。
-        if natural_slot < cls._BAR_SLOT_MIN:
-            return natural_slot
-        return min(natural_slot, cls._BAR_SLOT_MAX)
+        # 始终让可视柱铺满绘图区。旧逻辑把槽宽封顶为 18px 并右对齐，
+        # 缩放到 20 根柱时左半边会留下大片空白，看起来像有一半 K 线丢失。
+        # 数据量很大时自然槽宽仍会自动变小，不会把首尾柱推到图框外。
+        return chart_width / bar_count
 
     @classmethod
     def _bar_body_width(
